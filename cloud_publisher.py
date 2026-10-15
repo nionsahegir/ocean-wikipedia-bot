@@ -142,33 +142,40 @@ def record_posted_url(url):
         json.dump(data, f, indent=2)
 
 def extract_target_reels(username):
-    print(f"[*] Browsing @{username} with smart scroll via Playwright...")
+    print(f"[*] Browsing @{username} with smart wait via Playwright...")
     from playwright.sync_api import sync_playwright
     links = []
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+        )
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            locale="en-US"
         )
         page = context.new_page()
-        page.goto(f"https://www.instagram.com/{username}/", timeout=60000)
-        time.sleep(5)
-        
-        # Scroll down once to load more viral reels
         try:
-            page.evaluate("window.scrollBy(0, 1000)")
-            time.sleep(3)
-        except Exception:
-            pass
-        
-        anchors = page.query_selector_all("a")
-        for a in anchors:
-            href = a.get_attribute("href")
-            if href and ("/reel/" in href or "/p/" in href):
-                full = f"https://www.instagram.com{href}" if href.startswith("/") else href
-                if full not in links:
-                    links.append(full)
-        browser.close()
+            page.goto(f"https://www.instagram.com/{username}/", wait_until="domcontentloaded", timeout=60000)
+            time.sleep(6)
+            
+            # Execute JS to get all reel & post links directly from DOM
+            js_code = """() => {
+                return Array.from(document.querySelectorAll('a'))
+                    .map(a => a.href)
+                    .filter(h => h.includes('/reel/') || h.includes('/p/'));
+            }"""
+            dom_links = page.evaluate(js_code)
+            if dom_links:
+                for l in dom_links:
+                    if l not in links:
+                        links.append(l)
+        except Exception as e:
+            print(f"[!] Navigation error on @{username}: {e}")
+        finally:
+            browser.close()
+            
+    print(f"  -> Found {len(links)} media links from @{username}")
     return links
 
 def curate_and_publish_reel():
@@ -181,32 +188,31 @@ def curate_and_publish_reel():
     
     selected_url = None
     target_user = None
-    all_discovered_reels = []
     
-    # 1. Search for a reel not in cooldown
     for user in target_accounts:
-        try:
+        links = extract_target_reels(user)
+        reel_links = [l for l in links if "/reel/" in l]
+        for r in reel_links:
+            # Check 25-day cooldown
+            if r not in locked_urls:
+                selected_url = r
+                target_user = user
+                break
+        if selected_url:
+            break
+
+    # If all 8 accounts are currently in cooldown, pick from fresh discovered
+    if not selected_url:
+        for user in target_accounts:
             links = extract_target_reels(user)
             reel_links = [l for l in links if "/reel/" in l]
-            for r in reel_links:
-                all_discovered_reels.append((r, user))
-                if r not in locked_urls:
-                    selected_url = r
-                    target_user = user
-                    break
-            if selected_url:
+            if reel_links:
+                selected_url = reel_links[0]
+                target_user = user
                 break
-        except Exception as e:
-            print(f"[Warning] Error extracting from @{user}: {e}")
-            continue
-            
-    # 2. Safety fallback: if all discovered are locked, pick the best one to avoid failing
-    if not selected_url and all_discovered_reels:
-        print("[!] All discovered reels are currently in cooldown. Selecting top available to maintain daily schedule...")
-        selected_url, target_user = all_discovered_reels[0]
 
     if not selected_url:
-        raise Exception("Could not retrieve any reels from target accounts. Instagram may be rate limiting.")
+        raise Exception("Instagram DOM did not return reels. Retrying on next scheduled cron.")
 
     print(f"\n[+] Selected Viral Reel: {selected_url} from @{target_user}")
     
