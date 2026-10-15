@@ -29,55 +29,44 @@ def clean_old_files(days=2):
                         except Exception:
                             pass
 
-def upload_to_host(file_path):
-    print(f"[*] Uploading video file to Catbox Litterbox: {file_path}")
+def upload_and_publish_reel_direct(file_path, caption):
+    file_size = os.path.getsize(file_path)
+    print(f"[*] Initializing Meta Resumable Upload session (File size: {file_size} bytes)...")
     
-    # Method 1: curl directly (exact proven method from local system)
-    cmd = [
-        "curl", "-s",
-        "-F", "reqtype=fileupload",
-        "-F", "time=24h",
-        "-F", f"fileToUpload=@{file_path}",
-        "https://litterbox.catbox.moe/resources/internals/api.php"
-    ]
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    if res.returncode == 0 and res.stdout.strip().startswith("http"):
-        url = res.stdout.strip()
-        print(f"[+] Hosted video via curl: {url}")
-        return url
-
-    # Method 2: requests with browser user-agent
-    with open(file_path, "rb") as f:
-        res2 = requests.post(
-            "https://litterbox.catbox.moe/resources/internals/api.php",
-            data={"reqtype": "fileupload", "time": "24h"},
-            files={"fileToUpload": f},
-            headers={"User-Agent": "curl/7.88.1"},
-            timeout=180
-        )
-    if res2.status_code == 200 and res2.text.strip().startswith("http"):
-        url = res2.text.strip()
-        print(f"[+] Hosted video via requests: {url}")
-        return url
-
-    raise Exception(f"Video hosting upload failed: {res.stderr} / {res2.text}")
-
-def publish_reel(video_url, caption):
-    print(f"[*] Creating Reel container on Instagram...")
-    url = f"{BASE_URL}/{IG_BUSINESS_ID}/media"
-    res = requests.post(url, data={
+    # Step 1: Initialize Resumable Upload on Meta
+    init_url = f"{BASE_URL}/{IG_BUSINESS_ID}/media"
+    init_res = requests.post(init_url, data={
         "media_type": "REELS",
-        "video_url": video_url,
+        "upload_type": "resumable",
         "caption": caption,
         "access_token": PAGE_ACCESS_TOKEN
     }).json()
     
-    if "id" not in res:
-        raise Exception(f"Failed to create Reel container: {res}")
+    if "id" not in init_res or "uri" not in init_res:
+        raise Exception(f"Failed to create resumable upload container: {init_res}")
+        
+    container_id = init_res["id"]
+    upload_uri = init_res["uri"]
+    print(f"[+] Resumable Container created: {container_id}")
+    print(f"[+] Meta Direct Upload URI: {upload_uri}")
     
-    container_id = res["id"]
-    print(f"[+] Reel Container ID: {container_id}")
-    
+    # Step 2: Upload Video Bytes directly to Meta's rupload servers
+    print("[*] Uploading video binary directly to Meta servers...")
+    headers = {
+        "Authorization": f"OAuth {PAGE_ACCESS_TOKEN}",
+        "offset": "0",
+        "file_size": str(file_size),
+        "Content-Type": "application/octet-stream"
+    }
+    with open(file_path, "rb") as f:
+        up_res = requests.post(upload_uri, headers=headers, data=f, timeout=300)
+        
+    print(f"[+] Meta direct upload response code: {up_res.status_code}")
+    if up_res.status_code not in [200, 201]:
+        raise Exception(f"Meta binary upload failed: {up_res.text}")
+        
+    # Step 3: Poll Container Status until FINISHED
+    print("[*] Waiting for Meta Instagram to finish processing video...")
     status_url = f"{BASE_URL}/{container_id}?fields=status_code&access_token={PAGE_ACCESS_TOKEN}"
     for _ in range(40):
         time.sleep(5)
@@ -87,8 +76,9 @@ def publish_reel(video_url, caption):
         if code == "FINISHED":
             break
         elif code == "ERROR":
-            raise Exception("Instagram video processing failed.")
+            raise Exception("Meta video processing failed.")
             
+    # Step 4: Publish Reel Live
     print(f"[*] Publishing Reel live to @{IG_USERNAME}...")
     pub_url = f"{BASE_URL}/{IG_BUSINESS_ID}/media_publish"
     pub_res = requests.post(pub_url, data={
@@ -230,7 +220,8 @@ def curate_and_publish_reel():
     # 2. 100% Meta Instagram Guaranteed Standard: H.264 + AAC (Softened original audio)
     ff_cmd = [
         "ffmpeg", "-y", "-i", str(raw_video),
-        "-c:v", "copy",
+        "-vf", "scale='min(1080,iw)':-2,format=yuv420p",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
         "-af", "volume=0.85,afade=t=out:st=15:d=2",
         "-c:a", "aac", "-b:a", "128k",
         str(ready_video)
@@ -245,9 +236,8 @@ def curate_and_publish_reel():
             
     caption = f"{first_line}\n\nCredit: @{target_user}\nFollow @{IG_USERNAME} for daily marine discoveries.\n\n#oceanlife #marinelife #deepsea #marinebiology #underwater #ocean"
     
-    # 3. Direct Litterbox upload via curl (100% reliable for Meta Graph API)
-    public_url = upload_to_host(str(ready_video))
-    media_id = publish_reel(public_url, caption)
+    # 3. Direct Meta Binary Upload (Zero third party hosting, 100% reliable)
+    media_id = upload_and_publish_reel_direct(str(ready_video), caption)
     record_posted_url(selected_url)
     print(f"[Done] Reel publication finished successfully! Live Media ID: {media_id}")
     return media_id
