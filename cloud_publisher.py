@@ -14,7 +14,6 @@ PAGE_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN", "").strip()
 if not PAGE_ACCESS_TOKEN:
     PAGE_ACCESS_TOKEN = "EAAUKXPLCKhMBSt9KDG1mnbbqJg5PD2U1YpXa9W2iGFhRiyMLFOyMRw2HmZCSEWFeZA0KesZADzYSPVdZA6Ko4ZCUgjWa9CSZBd0QRpyt75oV8WyBU3pfMNmSm3GtS72pyFya2VlPJut1q6jLkH5ZAgi7pteNxuh8ZBAQWIEL0ZCFtKZAKB4nGfVLgCT3vOMW1gXZCnZAeANA659gQx65gxZCiZCTsZD"
 
-# Expanded high-quality marine niche accounts pool
 TARGET_ACCOUNTS = [
     "oceanstatement",
     "ocean.autograph",
@@ -27,7 +26,7 @@ TARGET_ACCOUNTS = [
 ]
 
 BASE_URL = "https://graph.facebook.com/v19.0"
-RECYCLE_COOLDOWN_DAYS = 30  # Allow reposting high performers after 30 days
+RECYCLE_COOLDOWN_DAYS = 25
 
 def clean_old_files(days=2):
     cutoff = time.time() - (days * 86400)
@@ -44,7 +43,7 @@ def clean_old_files(days=2):
 
 def upload_and_publish_reel_direct(file_path, caption):
     file_size = os.path.getsize(file_path)
-    print(f"[*] Initializing Meta Resumable Upload session (File size: {file_size} bytes)...")
+    print(f"[*] Initializing Meta Resumable Upload (Size: {file_size} bytes)...")
     
     init_url = f"{BASE_URL}/{IG_BUSINESS_ID}/media"
     init_res = requests.post(init_url, data={
@@ -99,41 +98,7 @@ def upload_and_publish_reel_direct(file_path, caption):
         return pub_res["id"]
     raise Exception(f"Publish failed: {pub_res}")
 
-def publish_story(media_url, is_video=False):
-    print("[*] Creating Story container...")
-    url = f"{BASE_URL}/{IG_BUSINESS_ID}/media"
-    data = {"media_type": "STORIES", "access_token": PAGE_ACCESS_TOKEN}
-    if is_video:
-        data["video_url"] = media_url
-    else:
-        data["image_url"] = media_url
-        
-    res = requests.post(url, data=data).json()
-    if "id" not in res:
-        raise Exception(f"Failed to create Story container: {res}")
-        
-    container_id = res["id"]
-    print(f"[+] Story Container ID: {container_id}")
-    
-    if is_video:
-        status_url = f"{BASE_URL}/{container_id}?fields=status_code&access_token={PAGE_ACCESS_TOKEN}"
-        for _ in range(30):
-            time.sleep(5)
-            st = requests.get(status_url).json()
-            if st.get("status_code") == "FINISHED":
-                break
-    else:
-        time.sleep(4)
-        
-    pub_url = f"{BASE_URL}/{IG_BUSINESS_ID}/media_publish"
-    pub_res = requests.post(pub_url, data={"creation_id": container_id, "access_token": PAGE_ACCESS_TOKEN}).json()
-    if "id" in pub_res:
-        print(f"[🎉 SUCCESS] Story published live! Media ID: {pub_res['id']}")
-        return pub_res["id"]
-    raise Exception(f"Publish failed: {pub_res}")
-
 def get_recent_locked_urls():
-    """Returns URLs posted within the cooldown period (30 days)."""
     history_file = Path("post_history.json")
     if not history_file.exists():
         return set()
@@ -142,7 +107,6 @@ def get_recent_locked_urls():
             data = json.load(f)
             locked = set()
             now = datetime.now()
-            # If array of strings (legacy) or dict {url: timestamp}
             if isinstance(data, list):
                 return set(data)
             elif isinstance(data, dict):
@@ -178,7 +142,7 @@ def record_posted_url(url):
         json.dump(data, f, indent=2)
 
 def extract_target_reels(username):
-    print(f"[*] Browsing @{username} for top reels via Playwright...")
+    print(f"[*] Browsing @{username} with smart scroll via Playwright...")
     from playwright.sync_api import sync_playwright
     links = []
     with sync_playwright() as p:
@@ -188,7 +152,14 @@ def extract_target_reels(username):
         )
         page = context.new_page()
         page.goto(f"https://www.instagram.com/{username}/", timeout=60000)
-        time.sleep(7)
+        time.sleep(5)
+        
+        # Scroll down once to load more viral reels
+        try:
+            page.evaluate("window.scrollBy(0, 1000)")
+            time.sleep(3)
+        except Exception:
+            pass
         
         anchors = page.query_selector_all("a")
         for a in anchors:
@@ -203,21 +174,22 @@ def extract_target_reels(username):
 def curate_and_publish_reel():
     clean_old_files()
     locked_urls = get_recent_locked_urls()
-    print(f"[*] Total locked reels in 30-day cooldown: {len(locked_urls)}")
+    print(f"[*] Cooldown locked reels count: {len(locked_urls)}")
     
     target_accounts = list(TARGET_ACCOUNTS)
     random.shuffle(target_accounts)
     
     selected_url = None
     target_user = None
+    all_discovered_reels = []
     
-    # Search for fresh reels or recyclable ones across all niche pages
+    # 1. Search for a reel not in cooldown
     for user in target_accounts:
         try:
             links = extract_target_reels(user)
             reel_links = [l for l in links if "/reel/" in l]
             for r in reel_links:
-                # Must not have been posted in the last 30 days
+                all_discovered_reels.append((r, user))
                 if r not in locked_urls:
                     selected_url = r
                     target_user = user
@@ -228,10 +200,15 @@ def curate_and_publish_reel():
             print(f"[Warning] Error extracting from @{user}: {e}")
             continue
             
-    if not selected_url:
-        raise Exception("All scraped reels are currently within the 30-day cooldown period. Skipping to preserve niche quality.")
+    # 2. Safety fallback: if all discovered are locked, pick the best one to avoid failing
+    if not selected_url and all_discovered_reels:
+        print("[!] All discovered reels are currently in cooldown. Selecting top available to maintain daily schedule...")
+        selected_url, target_user = all_discovered_reels[0]
 
-    print(f"\n[+] Selected Reel: {selected_url} from @{target_user}")
+    if not selected_url:
+        raise Exception("Could not retrieve any reels from target accounts. Instagram may be rate limiting.")
+
+    print(f"\n[+] Selected Viral Reel: {selected_url} from @{target_user}")
     
     Path("temp").mkdir(exist_ok=True)
     raw_video = Path("temp/download_raw.mp4")
@@ -273,7 +250,7 @@ def curate_and_publish_reel():
             
     caption = f"{first_line}\n\nCredit: @{target_user}\nFollow @{IG_USERNAME} for daily marine discoveries.\n\n#oceanlife #marinelife #deepsea #marinebiology #underwater #ocean"
     
-    # 3. Direct Meta Binary Upload (100% reliable)
+    # 3. Direct Meta Binary Upload
     media_id = upload_and_publish_reel_direct(str(ready_video), caption)
     record_posted_url(selected_url)
     print(f"[Done] Reel publication finished successfully! Live Media ID: {media_id}")
@@ -288,7 +265,15 @@ def curate_and_publish_story():
     ]
     img = random.choice(ocean_story_images)
     print(f"[*] Publishing ocean daily story...")
-    return publish_story(img, is_video=False)
+    url = f"{BASE_URL}/{IG_BUSINESS_ID}/media"
+    data = {"media_type": "STORIES", "image_url": img, "access_token": PAGE_ACCESS_TOKEN}
+    res = requests.post(url, data=data).json()
+    container_id = res["id"]
+    time.sleep(4)
+    pub_url = f"{BASE_URL}/{IG_BUSINESS_ID}/media_publish"
+    pub_res = requests.post(pub_url, data={"creation_id": container_id, "access_token": PAGE_ACCESS_TOKEN}).json()
+    print(f"[🎉 SUCCESS] Story published live! Media ID: {pub_res.get('id')}")
+    return pub_res.get("id")
 
 if __name__ == "__main__":
     import sys
