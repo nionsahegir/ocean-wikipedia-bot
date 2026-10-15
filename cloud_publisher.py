@@ -6,14 +6,13 @@ import requests
 import subprocess
 from pathlib import Path
 
-IG_BUSINESS_ID = "17841449823313081"
-IG_USERNAME = "oceanwikipedia"
-PAGE_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN", "").strip()
+CONFIG = {
+    "instagram_business_id": os.getenv("IG_BUSINESS_ID", "17841449823313081"),
+    "page_access_token": os.getenv("IG_ACCESS_TOKEN", ""),
+    "instagram_username": os.getenv("IG_USERNAME", "oceanwikipedia"),
+    "api_version": "v19.0"
+}
 
-if not PAGE_ACCESS_TOKEN:
-    PAGE_ACCESS_TOKEN = "EAAUKXPLCKhMBSt9KDG1mnbbqJg5PD2U1YpXa9W2iGFhRiyMLFOyMRw2HmZCSEWFeZA0KesZADzYSPVdZA6Ko4ZCUgjWa9CSZBd0QRpyt75oV8WyBU3pfMNmSm3GtS72pyFya2VlPJut1q6jLkH5ZAgi7pteNxuh8ZBAQWIEL0ZCFtKZAKB4nGfVLgCT3vOMW1gXZCnZAeANA659gQx65gxZCiZCTsZD"
-
-# Verified active marine niche target accounts
 TARGET_ACCOUNTS = [
     "oceanstatement",
     "ocean.autograph",
@@ -25,7 +24,8 @@ TARGET_ACCOUNTS = [
     "scubadivingmag"
 ]
 
-BASE_URL = "https://graph.facebook.com/v19.0"
+BASE_URL = f"https://graph.facebook.com/{CONFIG['api_version']}"
+RECYCLE_COOLDOWN_DAYS = 25  # Re-post eligible after 25 days cooldown
 
 def clean_old_files(days=2):
     cutoff = time.time() - (days * 86400)
@@ -37,59 +37,70 @@ def clean_old_files(days=2):
                     if f.stat().st_mtime < cutoff:
                         try:
                             f.unlink()
+                            print(f"[Cleanup] Removed old temporary media: {f.name}")
                         except Exception:
                             pass
 
-def upload_and_publish_reel_direct(file_path, caption):
-    file_size = os.path.getsize(file_path)
-    print(f"[*] Initializing Meta Resumable Upload (Size: {file_size} bytes)...")
+def upload_and_publish_reel_resumable(video_path, caption):
+    """
+    Direct Resumable Binary Upload to Meta's rupload.facebook.com.
+    Zero third-party file host dependency (no catbox, no tmpfiles).
+    """
+    ig_id = CONFIG["instagram_business_id"]
+    token = CONFIG["page_access_token"]
+    file_size = os.path.getsize(video_path)
     
-    init_url = f"{BASE_URL}/{IG_BUSINESS_ID}/media"
+    print(f"[*] Step 1: Initializing Resumable Upload session for {file_size} bytes...")
+    init_url = f"{BASE_URL}/{ig_id}/media"
     init_res = requests.post(init_url, data={
         "media_type": "REELS",
         "upload_type": "resumable",
         "caption": caption,
-        "access_token": PAGE_ACCESS_TOKEN
+        "access_token": token
     }).json()
     
-    if "id" not in init_res or "uri" not in init_res:
-        raise Exception(f"Failed to create resumable upload container: {init_res}")
+    if "id" not in init_res:
+        raise Exception(f"Failed to initialize resumable upload session: {init_res}")
         
     container_id = init_res["id"]
-    upload_uri = init_res["uri"]
-    print(f"[+] Resumable Container created: {container_id}")
-    print(f"[+] Meta Direct Upload URI: {upload_uri}")
+    upload_uri = init_res.get("uri", f"https://rupload.facebook.com/ig-api-upload/{CONFIG['api_version']}/{container_id}")
+    print(f"[+] Container ID: {container_id}")
+    print(f"[+] Direct Meta Upload URI: {upload_uri}")
     
+    print(f"[*] Step 2: Streaming video binary directly to Meta servers (rupload.facebook.com)...")
     headers = {
-        "Authorization": f"OAuth {PAGE_ACCESS_TOKEN}",
+        "Authorization": f"OAuth {token}",
         "offset": "0",
         "file_size": str(file_size),
         "Content-Type": "application/octet-stream"
     }
-    with open(file_path, "rb") as f:
-        up_res = requests.post(upload_uri, headers=headers, data=f, timeout=300)
+    
+    with open(video_path, "rb") as f:
+        upload_res = requests.post(upload_uri, headers=headers, data=f, timeout=300)
         
-    print(f"[+] Meta direct upload response code: {up_res.status_code}")
-    if up_res.status_code not in [200, 201]:
-        raise Exception(f"Meta binary upload failed: {up_res.text}")
-        
-    print("[*] Waiting for Meta Instagram to finish processing video...")
-    status_url = f"{BASE_URL}/{container_id}?fields=status_code&access_token={PAGE_ACCESS_TOKEN}"
-    for _ in range(40):
+    if upload_res.status_code not in [200, 201]:
+        raise Exception(f"Meta binary upload failed (HTTP {upload_res.status_code}): {upload_res.text}")
+    print("[+] Video bytes successfully accepted by Meta servers!")
+    
+    print("[*] Step 3: Waiting for Meta container processing...")
+    status_url = f"{BASE_URL}/{container_id}?fields=status_code,status&access_token={token}"
+    for i in range(45):
         time.sleep(5)
         st = requests.get(status_url).json()
         code = st.get("status_code")
-        print(f"    Status: {code}")
+        print(f"    Status Check {i+1}: {code}")
         if code == "FINISHED":
             break
         elif code == "ERROR":
-            raise Exception("Meta video processing failed.")
-            
-    print(f"[*] Publishing Reel live to @{IG_USERNAME}...")
-    pub_url = f"{BASE_URL}/{IG_BUSINESS_ID}/media_publish"
+            raise Exception(f"Instagram media processing error: {st}")
+    else:
+        print("[!] Warning: Container timed out waiting for FINISHED, attempting publish anyway...")
+        
+    print("[*] Step 4: Publishing Reel live to Instagram...")
+    pub_url = f"{BASE_URL}/{ig_id}/media_publish"
     pub_res = requests.post(pub_url, data={
         "creation_id": container_id,
-        "access_token": PAGE_ACCESS_TOKEN
+        "access_token": token
     }).json()
     
     if "id" in pub_res:
@@ -97,95 +108,146 @@ def upload_and_publish_reel_direct(file_path, caption):
         return pub_res["id"]
     raise Exception(f"Publish failed: {pub_res}")
 
-def get_already_posted_urls():
+def publish_story(media_url, is_video=False):
+    ig_id = CONFIG["instagram_business_id"]
+    token = CONFIG["page_access_token"]
+    
+    print("[*] Creating Story container...")
+    url = f"{BASE_URL}/{ig_id}/media"
+    data = {
+        "media_type": "STORIES",
+        "access_token": token
+    }
+    if is_video:
+        data["video_url"] = media_url
+    else:
+        data["image_url"] = media_url
+        
+    res = requests.post(url, data=data).json()
+    if "id" not in res:
+        raise Exception(f"Failed to create Story container: {res}")
+        
+    container_id = res["id"]
+    print(f"[+] Story Container ID: {container_id}")
+    
+    if is_video:
+        status_url = f"{BASE_URL}/{container_id}?fields=status_code&access_token={token}"
+        for _ in range(30):
+            time.sleep(5)
+            st = requests.get(status_url).json()
+            if st.get("status_code") == "FINISHED":
+                break
+    else:
+        time.sleep(4)
+        
+    pub_url = f"{BASE_URL}/{ig_id}/media_publish"
+    pub_res = requests.post(pub_url, data={
+        "creation_id": container_id,
+        "access_token": token
+    }).json()
+    
+    if "id" in pub_res:
+        print(f"[🎉 SUCCESS] Story published live! Media ID: {pub_res['id']}")
+        return pub_res["id"]
+    raise Exception(f"Publish failed: {pub_res}")
+
+def load_post_history():
     history_file = Path("post_history.json")
-    if not history_file.exists():
-        return []
-    try:
-        with open(history_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                return data
-            elif isinstance(data, dict):
-                return list(data.keys())
-    except Exception:
-        return []
-    return []
+    if history_file.exists():
+        try:
+            with open(history_file, "r", encoding="utf-8-sig") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+                elif isinstance(data, list):
+                    # convert legacy list to dict
+                    now = int(time.time())
+                    return {url: now for url in data}
+        except Exception:
+            return {}
+    return {}
 
 def record_posted_url(url):
-    history = get_already_posted_urls()
-    if url not in history:
-        history.append(url)
+    history = load_post_history()
+    history[url] = int(time.time())
     with open("post_history.json", "w", encoding="utf-8") as f:
-        # Keep last 30 to allow recycle after 30 unique reels
-        json.dump(history[-30:], f, indent=2)
+        json.dump(history, f, indent=2)
 
-def extract_target_reels(username):
-    print(f"[*] Checking @{username} for fresh reels via Playwright...")
-    from playwright.sync_api import sync_playwright
-    links = []
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox"]
-        )
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 800}
-        )
-        page = context.new_page()
+def load_curated_vault():
+    vault_file = Path("curated_vault.json")
+    if vault_file.exists():
         try:
-            page.goto(f"https://www.instagram.com/{username}/", timeout=60000)
-            time.sleep(7)
-            anchors = page.query_selector_all("a")
-            for a in anchors:
-                href = a.get_attribute("href")
-                if href and ("/reel/" in href or "/p/" in href):
-                    full = f"https://www.instagram.com{href}" if href.startswith("/") else href
-                    if full not in links:
-                        links.append(full)
+            with open(vault_file, "r", encoding="utf-8-sig") as f:
+                return json.load(f)
         except Exception as e:
-            print(f"[!] Error on @{username}: {e}")
-        finally:
-            browser.close()
+            print(f"[!] Warning reading curated_vault.json: {e}")
+    return {}
+
+def select_candidate_reel():
+    """
+    Selects a viral reel rotating across all 8 target accounts:
+    1. Highest priority: A reel that has never been posted.
+    2. Recycle policy: If all reels were posted, pick ones where cooldown >= 25 days.
+    """
+    vault = load_curated_vault()
+    history = load_post_history()
+    current_time = time.time()
+    cooldown_seconds = RECYCLE_COOLDOWN_DAYS * 86400
+    
+    print(f"[*] Post history count: {len(history)} items")
+    
+    accounts = list(TARGET_ACCOUNTS)
+    random.shuffle(accounts)
+    
+    # Pass 1: Fresh, unposted reels
+    for acc in accounts:
+        reels = vault.get(acc, [])
+        shuffled = list(reels)
+        random.shuffle(shuffled)
+        for r in shuffled:
+            if r not in history:
+                print(f"[+] Selected fresh reel from @{acc}: {r}")
+                return r, acc
+                
+    # Pass 2: Cooldown recycling (>= 25 days)
+    print(f"[*] All reels in vault have been posted once. Evaluating 25-day cooldown recycling...")
+    eligible_recycled = []
+    for acc in accounts:
+        reels = vault.get(acc, [])
+        for r in reels:
+            last_posted = history.get(r, 0)
+            if (current_time - last_posted) >= cooldown_seconds:
+                eligible_recycled.append((r, acc, last_posted))
+                
+    if eligible_recycled:
+        # Pick the oldest posted reel for maximum freshness
+        eligible_recycled.sort(key=lambda x: x[2])
+        chosen = eligible_recycled[0]
+        days_ago = (current_time - chosen[2]) / 86400
+        print(f"[+] Recycling top viral reel from @{chosen[1]} (posted {days_ago:.1f} days ago): {chosen[0]}")
+        return chosen[0], chosen[1]
+        
+    # Pass 3: Fallback if cooldown not elapsed yet (pick least recently posted)
+    fallback_list = []
+    for acc in accounts:
+        reels = vault.get(acc, [])
+        for r in reels:
+            fallback_list.append((r, acc, history.get(r, 0)))
             
-    print(f"  -> Discovered {len(links)} media links from @{username}")
-    return links
+    if fallback_list:
+        fallback_list.sort(key=lambda x: x[2])
+        return fallback_list[0][0], fallback_list[0][1]
+
+    # Hardcoded safety fallback
+    return "https://www.instagram.com/oceanstatement/reel/DehyI9yNW4p/", "oceanstatement"
 
 def curate_and_publish_reel():
     clean_old_files()
-    posted_urls = get_already_posted_urls()
-    print(f"[*] Previously posted items count: {len(posted_urls)}")
     
-    target_accounts = list(TARGET_ACCOUNTS)
-    random.shuffle(target_accounts)
+    selected_url, target_user = select_candidate_reel()
+    print(f"\n[+] Active Target Reel: {selected_url} (Creator: @{target_user})")
     
-    selected_url = None
-    target_user = None
-    all_discovered = []
-    
-    for user in target_accounts:
-        links = extract_target_reels(user)
-        reel_links = [l for l in links if "/reel/" in l]
-        for r in reel_links:
-            all_discovered.append((r, user))
-            if r not in posted_urls:
-                selected_url = r
-                target_user = user
-                break
-        if selected_url:
-            break
-            
-    # Fallback to the top discovered reel if all scraped are in recent history
-    if not selected_url and all_discovered:
-        print("[!] All discovered reels are in recent history. Picking top available to continue daily flow...")
-        selected_url, target_user = all_discovered[0]
-
-    if not selected_url:
-        raise Exception("Could not find any reels across active target accounts.")
-
-    print(f"\n[+] Selected Viral Reel: {selected_url} from @{target_user}")
-    
+    # 2. Download with yt-dlp & extract original description
     Path("temp").mkdir(exist_ok=True)
     raw_video = Path("temp/download_raw.mp4")
     ready_video = Path("temp/reel_ready.mp4")
@@ -193,6 +255,7 @@ def curate_and_publish_reel():
     if raw_video.exists(): raw_video.unlink()
     if ready_video.exists(): ready_video.unlink()
     
+    print("[*] Fetching metadata with yt-dlp...")
     desc_cmd = ["yt-dlp", "--dump-json", selected_url]
     desc_res = subprocess.run(desc_cmd, capture_output=True, text=True)
     original_desc = ""
@@ -203,31 +266,31 @@ def curate_and_publish_reel():
         except Exception:
             pass
 
-    # 1. Download original MP4
+    print("[*] Downloading video with yt-dlp...")
     dl_cmd = ["yt-dlp", "-f", "mp4/best", "-o", str(raw_video), selected_url]
     subprocess.run(dl_cmd, check=True)
     
-    # 2. 100% Meta Instagram Guaranteed Standard: H.264 + AAC (Softened original audio)
+    # 3. Audio Normalization (100% ORIGINAL SOUND ONLY - softened to 0.85 with smooth fade-out)
+    print("[*] Processing video & normalizing authentic original sound...")
     ff_cmd = [
         "ffmpeg", "-y", "-i", str(raw_video),
-        "-vf", "scale='min(1080,iw)':-2,format=yuv420p",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
         "-af", "volume=0.85,afade=t=out:st=15:d=2",
-        "-c:a", "aac", "-b:a", "128k",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
         str(ready_video)
     ]
     subprocess.run(ff_cmd, check=True)
     
+    # 4. Generate clean, short, natural caption (no weird AI robot voiceover)
     first_line = "Discovering the mesmerizing depths of our living planet."
     if original_desc:
-        lines = [l.strip() for l in original_desc.split("\n") if l.strip() and not l.startswith("#")]
+        lines = [l.strip() for l in original_desc.split("\n") if l.strip() and not l.startswith("#") and not l.lower().startswith("follow") and not l.lower().startswith("credit")]
         if lines:
             first_line = lines[0]
             
-    caption = f"{first_line}\n\nCredit: @{target_user}\nFollow @{IG_USERNAME} for daily marine discoveries.\n\n#oceanlife #marinelife #deepsea #marinebiology #underwater #ocean"
+    caption = f"{first_line}\n\nCredit: @{target_user}\nFollow @{CONFIG['instagram_username']} for daily ocean wonders.\n\n#oceanlife #marinelife #deepsea #marinebiology #underwater #ocean"
     
-    # 3. Direct Meta Binary Upload
-    media_id = upload_and_publish_reel_direct(str(ready_video), caption)
+    # 5. Direct Meta Resumable Binary Upload (Zero third party hosts!)
+    media_id = upload_and_publish_reel_resumable(str(ready_video), caption)
     record_posted_url(selected_url)
     print(f"[Done] Reel publication finished successfully! Live Media ID: {media_id}")
     return media_id
@@ -241,15 +304,7 @@ def curate_and_publish_story():
     ]
     img = random.choice(ocean_story_images)
     print(f"[*] Publishing ocean daily story...")
-    url = f"{BASE_URL}/{IG_BUSINESS_ID}/media"
-    data = {"media_type": "STORIES", "image_url": img, "access_token": PAGE_ACCESS_TOKEN}
-    res = requests.post(url, data=data).json()
-    container_id = res["id"]
-    time.sleep(4)
-    pub_url = f"{BASE_URL}/{IG_BUSINESS_ID}/media_publish"
-    pub_res = requests.post(pub_url, data={"creation_id": container_id, "access_token": PAGE_ACCESS_TOKEN}).json()
-    print(f"[🎉 SUCCESS] Story published live! Media ID: {pub_res.get('id')}")
-    return pub_res.get("id")
+    return publish_story(img, is_video=False)
 
 if __name__ == "__main__":
     import sys
