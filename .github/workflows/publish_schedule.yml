@@ -1,0 +1,76 @@
+name: Ocean Wikipedia Autonomous Publisher
+
+on:
+  schedule:
+    # 08:00 UTC = 02:00 PM BST (Reel 1)
+    - cron: '0 8 * * *'
+    # 13:00 UTC = 07:00 PM BST (Story)
+    - cron: '0 13 * * *'
+    # 16:00 UTC = 10:00 PM BST (Reel 2)
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to trigger'
+        required: true
+        default: 'reel'
+        type: choice
+        options:
+          - reel
+          - story
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Determine Action
+        id: action_step
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "action=${{ github.event.inputs.action }}" >> $GITHUB_OUTPUT
+          else
+            HOUR=$(date -u +"%H")
+            if [ "$HOUR" -eq "13" ]; then
+              echo "action=story" >> $GITHUB_OUTPUT
+            else
+              echo "action=reel" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Run Cloud Publisher
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_BUSINESS_ID: ${{ secrets.IG_BUSINESS_ID }}
+          IG_USERNAME: ${{ secrets.IG_USERNAME }}
+        run: |
+          python cloud_publisher.py ${{ steps.action_step.outputs.action }}
+
+      - name: Commit & Push Updated History
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add post_history.json
+          git commit -m "chore: update post history [skip ci]" || echo "No changes to commit"
+          git push
