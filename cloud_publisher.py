@@ -5,7 +5,6 @@ import random
 import requests
 import subprocess
 from pathlib import Path
-from datetime import datetime, timedelta
 
 IG_BUSINESS_ID = "17841449823313081"
 IG_USERNAME = "oceanwikipedia"
@@ -14,6 +13,7 @@ PAGE_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN", "").strip()
 if not PAGE_ACCESS_TOKEN:
     PAGE_ACCESS_TOKEN = "EAAUKXPLCKhMBSt9KDG1mnbbqJg5PD2U1YpXa9W2iGFhRiyMLFOyMRw2HmZCSEWFeZA0KesZADzYSPVdZA6Ko4ZCUgjWa9CSZBd0QRpyt75oV8WyBU3pfMNmSm3GtS72pyFya2VlPJut1q6jLkH5ZAgi7pteNxuh8ZBAQWIEL0ZCFtKZAKB4nGfVLgCT3vOMW1gXZCnZAeANA659gQx65gxZCiZCTsZD"
 
+# 8 High-quality marine niche accounts
 TARGET_ACCOUNTS = [
     "oceanstatement",
     "ocean.autograph",
@@ -26,7 +26,6 @@ TARGET_ACCOUNTS = [
 ]
 
 BASE_URL = "https://graph.facebook.com/v19.0"
-RECYCLE_COOLDOWN_DAYS = 25
 
 def clean_old_files(days=2):
     cutoff = time.time() - (days * 86400)
@@ -43,7 +42,7 @@ def clean_old_files(days=2):
 
 def upload_and_publish_reel_direct(file_path, caption):
     file_size = os.path.getsize(file_path)
-    print(f"[*] Initializing Meta Resumable Upload (Size: {file_size} bytes)...")
+    print(f"[*] Initializing Meta Resumable Upload session (File size: {file_size} bytes)...")
     
     init_url = f"{BASE_URL}/{IG_BUSINESS_ID}/media"
     init_res = requests.post(init_url, data={
@@ -98,121 +97,85 @@ def upload_and_publish_reel_direct(file_path, caption):
         return pub_res["id"]
     raise Exception(f"Publish failed: {pub_res}")
 
-def get_recent_locked_urls():
+def get_already_posted_urls():
     history_file = Path("post_history.json")
     if not history_file.exists():
-        return set()
+        return []
     try:
         with open(history_file, "r", encoding="utf-8") as f:
             data = json.load(f)
-            locked = set()
-            now = datetime.now()
             if isinstance(data, list):
-                return set(data)
+                return data
             elif isinstance(data, dict):
-                for url, post_date_str in data.items():
-                    try:
-                        p_date = datetime.fromisoformat(post_date_str)
-                        if now - p_date < timedelta(days=RECYCLE_COOLDOWN_DAYS):
-                            locked.add(url)
-                    except Exception:
-                        locked.add(url)
-                return locked
+                return list(data.keys())
     except Exception:
-        return set()
-    return set()
+        return []
+    return []
 
 def record_posted_url(url):
-    history_file = Path("post_history.json")
-    data = {}
-    if history_file.exists():
-        try:
-            with open(history_file, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-                if isinstance(raw, dict):
-                    data = raw
-                elif isinstance(raw, list):
-                    for u in raw:
-                        data[u] = (datetime.now() - timedelta(days=5)).isoformat()
-        except Exception:
-            pass
-            
-    data[url] = datetime.now().isoformat()
+    history = get_already_posted_urls()
+    if url not in history:
+        history.append(url)
     with open("post_history.json", "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        # Keep last 25 to allow reposting after 25+ posts cycle
+        json.dump(history[-25:], f, indent=2)
 
 def extract_target_reels(username):
-    print(f"[*] Browsing @{username} with smart wait via Playwright...")
+    print(f"[*] Extracting media links from @{username} via Playwright...")
     from playwright.sync_api import sync_playwright
     links = []
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-        )
+        browser = p.chromium.launch(headless=True)
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            locale="en-US"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
         page = context.new_page()
-        try:
-            page.goto(f"https://www.instagram.com/{username}/", wait_until="domcontentloaded", timeout=60000)
-            time.sleep(6)
-            
-            # Execute JS to get all reel & post links directly from DOM
-            js_code = """() => {
-                return Array.from(document.querySelectorAll('a'))
-                    .map(a => a.href)
-                    .filter(h => h.includes('/reel/') || h.includes('/p/'));
-            }"""
-            dom_links = page.evaluate(js_code)
-            if dom_links:
-                for l in dom_links:
-                    if l not in links:
-                        links.append(l)
-        except Exception as e:
-            print(f"[!] Navigation error on @{username}: {e}")
-        finally:
-            browser.close()
-            
-    print(f"  -> Found {len(links)} media links from @{username}")
+        page.goto(f"https://www.instagram.com/{username}/", timeout=60000)
+        time.sleep(7)
+        
+        anchors = page.query_selector_all("a")
+        for a in anchors:
+            href = a.get_attribute("href")
+            if href and ("/reel/" in href or "/p/" in href):
+                full = f"https://www.instagram.com{href}" if href.startswith("/") else href
+                if full not in links:
+                    links.append(full)
+        browser.close()
     return links
 
 def curate_and_publish_reel():
     clean_old_files()
-    locked_urls = get_recent_locked_urls()
-    print(f"[*] Cooldown locked reels count: {len(locked_urls)}")
+    posted_urls = get_already_posted_urls()
     
     target_accounts = list(TARGET_ACCOUNTS)
     random.shuffle(target_accounts)
     
     selected_url = None
     target_user = None
+    all_discovered = []
     
     for user in target_accounts:
-        links = extract_target_reels(user)
-        reel_links = [l for l in links if "/reel/" in l]
-        for r in reel_links:
-            # Check 25-day cooldown
-            if r not in locked_urls:
-                selected_url = r
-                target_user = user
-                break
-        if selected_url:
-            break
-
-    # If all 8 accounts are currently in cooldown, pick from fresh discovered
-    if not selected_url:
-        for user in target_accounts:
+        try:
             links = extract_target_reels(user)
             reel_links = [l for l in links if "/reel/" in l]
-            if reel_links:
-                selected_url = reel_links[0]
-                target_user = user
+            for r in reel_links:
+                all_discovered.append((r, user))
+                if r not in posted_urls:
+                    selected_url = r
+                    target_user = user
+                    break
+            if selected_url:
                 break
+        except Exception as e:
+            print(f"[Warning] Error extracting from @{user}: {e}")
+            continue
+            
+    # Fallback to the top discovered reel if all are in recent history
+    if not selected_url and all_discovered:
+        selected_url, target_user = all_discovered[0]
 
     if not selected_url:
-        raise Exception("Instagram DOM did not return reels. Retrying on next scheduled cron.")
+        raise Exception("No reel found across accounts.")
 
     print(f"\n[+] Selected Viral Reel: {selected_url} from @{target_user}")
     
