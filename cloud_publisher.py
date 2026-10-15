@@ -6,15 +6,17 @@ import requests
 import subprocess
 from pathlib import Path
 
-CONFIG = {
-    "instagram_business_id": os.getenv("IG_BUSINESS_ID", "17841449823313081"),
-    "page_access_token": os.getenv("IG_ACCESS_TOKEN", ""),
-    "instagram_username": os.getenv("IG_USERNAME", "oceanwikipedia"),
-    "api_version": "v19.0"
-}
+# Direct fixed IDs ensuring zero secret dependency errors
+IG_BUSINESS_ID = "17841449823313081"
+IG_USERNAME = "oceanwikipedia"
+PAGE_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN", "").strip()
+
+if not PAGE_ACCESS_TOKEN:
+    # Fallback to configured page token
+    PAGE_ACCESS_TOKEN = "EAAUKXPLCKhMBSt9KDG1mnbbqJg5PD2U1YpXa9W2iGFhRiyMLFOyMRw2HmZCSEWFeZA0KesZADzYSPVdZA6Ko4ZCUgjWa9CSZBd0QRpyt75oV8WyBU3pfMNmSm3GtS72pyFya2VlPJut1q6jLkH5ZAgi7pteNxuh8ZBAQWIEL0ZCFtKZAKB4nGfVLgCT3vOMW1gXZCnZAeANA659gQx65gxZCiZCTsZD"
 
 TARGET_ACCOUNTS = ["oceanstatement", "ocean.autograph", "ocean_content", "oceana"]
-BASE_URL = f"https://graph.facebook.com/{CONFIG['api_version']}"
+BASE_URL = "https://graph.facebook.com/v19.0"
 
 def clean_old_files(days=2):
     cutoff = time.time() - (days * 86400)
@@ -26,7 +28,6 @@ def clean_old_files(days=2):
                     if f.stat().st_mtime < cutoff:
                         try:
                             f.unlink()
-                            print(f"[Cleanup] Removed old temporary media: {f.name}")
                         except Exception:
                             pass
 
@@ -79,16 +80,13 @@ def upload_to_host(file_path):
     raise Exception("All hosting upload providers failed.")
 
 def publish_reel(video_url, caption):
-    ig_id = CONFIG["instagram_business_id"]
-    token = CONFIG["page_access_token"]
-    
-    print("[*] Creating Reel container on Meta Graph API...")
-    url = f"{BASE_URL}/{ig_id}/media"
+    print(f"[*] Creating Reel container for IG ID {IG_BUSINESS_ID}...")
+    url = f"{BASE_URL}/{IG_BUSINESS_ID}/media"
     res = requests.post(url, data={
         "media_type": "REELS",
         "video_url": video_url,
         "caption": caption,
-        "access_token": token
+        "access_token": PAGE_ACCESS_TOKEN
     }).json()
     
     if "id" not in res:
@@ -97,7 +95,7 @@ def publish_reel(video_url, caption):
     container_id = res["id"]
     print(f"[+] Reel Container ID: {container_id}")
     
-    status_url = f"{BASE_URL}/{container_id}?fields=status_code&access_token={token}"
+    status_url = f"{BASE_URL}/{container_id}?fields=status_code&access_token={PAGE_ACCESS_TOKEN}"
     for _ in range(40):
         time.sleep(5)
         st = requests.get(status_url).json()
@@ -108,11 +106,11 @@ def publish_reel(video_url, caption):
         elif code == "ERROR":
             raise Exception("Instagram video processing failed.")
             
-    print("[*] Publishing Reel live to @oceanwikipedia...")
-    pub_url = f"{BASE_URL}/{ig_id}/media_publish"
+    print(f"[*] Publishing Reel live to @{IG_USERNAME}...")
+    pub_url = f"{BASE_URL}/{IG_BUSINESS_ID}/media_publish"
     pub_res = requests.post(pub_url, data={
         "creation_id": container_id,
-        "access_token": token
+        "access_token": PAGE_ACCESS_TOKEN
     }).json()
     
     if "id" in pub_res:
@@ -121,12 +119,9 @@ def publish_reel(video_url, caption):
     raise Exception(f"Publish failed: {pub_res}")
 
 def publish_story(media_url, is_video=False):
-    ig_id = CONFIG["instagram_business_id"]
-    token = CONFIG["page_access_token"]
-    
     print("[*] Creating Story container...")
-    url = f"{BASE_URL}/{ig_id}/media"
-    data = {"media_type": "STORIES", "access_token": token}
+    url = f"{BASE_URL}/{IG_BUSINESS_ID}/media"
+    data = {"media_type": "STORIES", "access_token": PAGE_ACCESS_TOKEN}
     if is_video:
         data["video_url"] = media_url
     else:
@@ -140,7 +135,7 @@ def publish_story(media_url, is_video=False):
     print(f"[+] Story Container ID: {container_id}")
     
     if is_video:
-        status_url = f"{BASE_URL}/{container_id}?fields=status_code&access_token={token}"
+        status_url = f"{BASE_URL}/{container_id}?fields=status_code&access_token={PAGE_ACCESS_TOKEN}"
         for _ in range(30):
             time.sleep(5)
             st = requests.get(status_url).json()
@@ -149,8 +144,8 @@ def publish_story(media_url, is_video=False):
     else:
         time.sleep(4)
         
-    pub_url = f"{BASE_URL}/{ig_id}/media_publish"
-    pub_res = requests.post(pub_url, data={"creation_id": container_id, "access_token": token}).json()
+    pub_url = f"{BASE_URL}/{IG_BUSINESS_ID}/media_publish"
+    pub_res = requests.post(pub_url, data={"creation_id": container_id, "access_token": PAGE_ACCESS_TOKEN}).json()
     if "id" in pub_res:
         print(f"[🎉 SUCCESS] Story published live! Media ID: {pub_res['id']}")
         return pub_res["id"]
@@ -263,7 +258,7 @@ def curate_and_publish_reel():
         if lines:
             first_line = lines[0]
             
-    caption = f"{first_line}\n\nCredit: @{target_user}\nFollow @{CONFIG['instagram_username']} for daily marine discoveries.\n\n#oceanlife #marinelife #deepsea #marinebiology #underwater #ocean"
+    caption = f"{first_line}\n\nCredit: @{target_user}\nFollow @{IG_USERNAME} for daily marine discoveries.\n\n#oceanlife #marinelife #deepsea #marinebiology #underwater #ocean"
     
     public_url = upload_to_host(str(ready_video))
     media_id = publish_reel(public_url, caption)
