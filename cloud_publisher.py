@@ -6,13 +6,11 @@ import requests
 import subprocess
 from pathlib import Path
 
-# Direct fixed IDs ensuring zero secret dependency errors
 IG_BUSINESS_ID = "17841449823313081"
 IG_USERNAME = "oceanwikipedia"
 PAGE_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN", "").strip()
 
 if not PAGE_ACCESS_TOKEN:
-    # Fallback to configured page token
     PAGE_ACCESS_TOKEN = "EAAUKXPLCKhMBSt9KDG1mnbbqJg5PD2U1YpXa9W2iGFhRiyMLFOyMRw2HmZCSEWFeZA0KesZADzYSPVdZA6Ko4ZCUgjWa9CSZBd0QRpyt75oV8WyBU3pfMNmSm3GtS72pyFya2VlPJut1q6jLkH5ZAgi7pteNxuh8ZBAQWIEL0ZCFtKZAKB4nGfVLgCT3vOMW1gXZCnZAeANA659gQx65gxZCiZCTsZD"
 
 TARGET_ACCOUNTS = ["oceanstatement", "ocean.autograph", "ocean_content", "oceana"]
@@ -48,19 +46,7 @@ def upload_to_host(file_path):
     except Exception as e:
         print(f"[!] tmpfiles error: {e}")
 
-    # Provider 2: file.io
-    try:
-        with open(file_path, "rb") as f:
-            res = requests.post("https://file.io", files={"file": f}, headers=headers, timeout=120)
-        if res.status_code == 200:
-            data = res.json()
-            if data.get("success") and "link" in data:
-                print(f"[+] Hosted on file.io: {data['link']}")
-                return data["link"]
-    except Exception as e:
-        print(f"[!] file.io error: {e}")
-
-    # Provider 3: litterbox
+    # Provider 2: litterbox
     try:
         with open(file_path, "rb") as f:
             res = requests.post(
@@ -96,15 +82,15 @@ def publish_reel(video_url, caption):
     print(f"[+] Reel Container ID: {container_id}")
     
     status_url = f"{BASE_URL}/{container_id}?fields=status_code&access_token={PAGE_ACCESS_TOKEN}"
-    for _ in range(40):
-        time.sleep(5)
+    for _ in range(50):
+        time.sleep(6)
         st = requests.get(status_url).json()
         code = st.get("status_code")
         print(f"    Status: {code}")
         if code == "FINISHED":
             break
         elif code == "ERROR":
-            raise Exception("Instagram video processing failed.")
+            raise Exception("Instagram video processing failed. Please check video format.")
             
     print(f"[*] Publishing Reel live to @{IG_USERNAME}...")
     pub_url = f"{BASE_URL}/{IG_BUSINESS_ID}/media_publish"
@@ -240,14 +226,17 @@ def curate_and_publish_reel():
         except Exception:
             pass
 
+    # Download original MP4
     dl_cmd = ["yt-dlp", "-f", "mp4/best", "-o", str(raw_video), selected_url]
     subprocess.run(dl_cmd, check=True)
     
-    # 100% ORIGINAL SOUND ONLY - Softened and normalized
+    # 100% Meta Instagram Guaranteed Standard: H.264 + AAC + yuv420p
     ff_cmd = [
         "ffmpeg", "-y", "-i", str(raw_video),
+        "-vf", "scale='min(1080,iw)':-2,format=yuv420p",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
         "-af", "volume=0.85,afade=t=out:st=15:d=2",
-        "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+        "-c:a", "aac", "-b:a", "128k",
         str(ready_video)
     ]
     subprocess.run(ff_cmd, check=True)
