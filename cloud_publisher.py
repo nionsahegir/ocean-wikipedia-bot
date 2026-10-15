@@ -13,16 +13,16 @@ PAGE_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN", "").strip()
 if not PAGE_ACCESS_TOKEN:
     PAGE_ACCESS_TOKEN = "EAAUKXPLCKhMBSt9KDG1mnbbqJg5PD2U1YpXa9W2iGFhRiyMLFOyMRw2HmZCSEWFeZA0KesZADzYSPVdZA6Ko4ZCUgjWa9CSZBd0QRpyt75oV8WyBU3pfMNmSm3GtS72pyFya2VlPJut1q6jLkH5ZAgi7pteNxuh8ZBAQWIEL0ZCFtKZAKB4nGfVLgCT3vOMW1gXZCnZAeANA659gQx65gxZCiZCTsZD"
 
-# 8 High-quality marine niche accounts
+# Verified active marine niche target accounts
 TARGET_ACCOUNTS = [
     "oceanstatement",
     "ocean.autograph",
     "ocean_content",
     "oceana",
-    "discoverocean",
-    "deepseapage",
-    "oceanlife.official",
-    "marinebiologyshots"
+    "paulnicklen",
+    "nautiluslive",
+    "mission_blue",
+    "scubadivingmag"
 ]
 
 BASE_URL = "https://graph.facebook.com/v19.0"
@@ -42,7 +42,7 @@ def clean_old_files(days=2):
 
 def upload_and_publish_reel_direct(file_path, caption):
     file_size = os.path.getsize(file_path)
-    print(f"[*] Initializing Meta Resumable Upload session (File size: {file_size} bytes)...")
+    print(f"[*] Initializing Meta Resumable Upload (Size: {file_size} bytes)...")
     
     init_url = f"{BASE_URL}/{IG_BUSINESS_ID}/media"
     init_res = requests.post(init_url, data={
@@ -117,35 +117,45 @@ def record_posted_url(url):
     if url not in history:
         history.append(url)
     with open("post_history.json", "w", encoding="utf-8") as f:
-        # Keep last 25 to allow reposting after 25+ posts cycle
-        json.dump(history[-25:], f, indent=2)
+        # Keep last 30 to allow recycle after 30 unique reels
+        json.dump(history[-30:], f, indent=2)
 
 def extract_target_reels(username):
-    print(f"[*] Extracting media links from @{username} via Playwright...")
+    print(f"[*] Checking @{username} for fresh reels via Playwright...")
     from playwright.sync_api import sync_playwright
     links = []
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox"]
+        )
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 800}
         )
         page = context.new_page()
-        page.goto(f"https://www.instagram.com/{username}/", timeout=60000)
-        time.sleep(7)
-        
-        anchors = page.query_selector_all("a")
-        for a in anchors:
-            href = a.get_attribute("href")
-            if href and ("/reel/" in href or "/p/" in href):
-                full = f"https://www.instagram.com{href}" if href.startswith("/") else href
-                if full not in links:
-                    links.append(full)
-        browser.close()
+        try:
+            page.goto(f"https://www.instagram.com/{username}/", timeout=60000)
+            time.sleep(7)
+            anchors = page.query_selector_all("a")
+            for a in anchors:
+                href = a.get_attribute("href")
+                if href and ("/reel/" in href or "/p/" in href):
+                    full = f"https://www.instagram.com{href}" if href.startswith("/") else href
+                    if full not in links:
+                        links.append(full)
+        except Exception as e:
+            print(f"[!] Error on @{username}: {e}")
+        finally:
+            browser.close()
+            
+    print(f"  -> Discovered {len(links)} media links from @{username}")
     return links
 
 def curate_and_publish_reel():
     clean_old_files()
     posted_urls = get_already_posted_urls()
+    print(f"[*] Previously posted items count: {len(posted_urls)}")
     
     target_accounts = list(TARGET_ACCOUNTS)
     random.shuffle(target_accounts)
@@ -155,27 +165,24 @@ def curate_and_publish_reel():
     all_discovered = []
     
     for user in target_accounts:
-        try:
-            links = extract_target_reels(user)
-            reel_links = [l for l in links if "/reel/" in l]
-            for r in reel_links:
-                all_discovered.append((r, user))
-                if r not in posted_urls:
-                    selected_url = r
-                    target_user = user
-                    break
-            if selected_url:
+        links = extract_target_reels(user)
+        reel_links = [l for l in links if "/reel/" in l]
+        for r in reel_links:
+            all_discovered.append((r, user))
+            if r not in posted_urls:
+                selected_url = r
+                target_user = user
                 break
-        except Exception as e:
-            print(f"[Warning] Error extracting from @{user}: {e}")
-            continue
+        if selected_url:
+            break
             
-    # Fallback to the top discovered reel if all are in recent history
+    # Fallback to the top discovered reel if all scraped are in recent history
     if not selected_url and all_discovered:
+        print("[!] All discovered reels are in recent history. Picking top available to continue daily flow...")
         selected_url, target_user = all_discovered[0]
 
     if not selected_url:
-        raise Exception("No reel found across accounts.")
+        raise Exception("Could not find any reels across active target accounts.")
 
     print(f"\n[+] Selected Viral Reel: {selected_url} from @{target_user}")
     
