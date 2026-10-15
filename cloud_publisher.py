@@ -5,6 +5,7 @@ import random
 import requests
 import subprocess
 from pathlib import Path
+from datetime import datetime, timedelta
 
 IG_BUSINESS_ID = "17841449823313081"
 IG_USERNAME = "oceanwikipedia"
@@ -13,8 +14,20 @@ PAGE_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN", "").strip()
 if not PAGE_ACCESS_TOKEN:
     PAGE_ACCESS_TOKEN = "EAAUKXPLCKhMBSt9KDG1mnbbqJg5PD2U1YpXa9W2iGFhRiyMLFOyMRw2HmZCSEWFeZA0KesZADzYSPVdZA6Ko4ZCUgjWa9CSZBd0QRpyt75oV8WyBU3pfMNmSm3GtS72pyFya2VlPJut1q6jLkH5ZAgi7pteNxuh8ZBAQWIEL0ZCFtKZAKB4nGfVLgCT3vOMW1gXZCnZAeANA659gQx65gxZCiZCTsZD"
 
-TARGET_ACCOUNTS = ["oceanstatement", "ocean.autograph", "ocean_content", "oceana"]
+# Expanded high-quality marine niche accounts pool
+TARGET_ACCOUNTS = [
+    "oceanstatement",
+    "ocean.autograph",
+    "ocean_content",
+    "oceana",
+    "discoverocean",
+    "deepseapage",
+    "oceanlife.official",
+    "marinebiologyshots"
+]
+
 BASE_URL = "https://graph.facebook.com/v19.0"
+RECYCLE_COOLDOWN_DAYS = 30  # Allow reposting high performers after 30 days
 
 def clean_old_files(days=2):
     cutoff = time.time() - (days * 86400)
@@ -119,25 +132,53 @@ def publish_story(media_url, is_video=False):
         return pub_res["id"]
     raise Exception(f"Publish failed: {pub_res}")
 
-def get_already_posted_urls():
+def get_recent_locked_urls():
+    """Returns URLs posted within the cooldown period (30 days)."""
     history_file = Path("post_history.json")
+    if not history_file.exists():
+        return set()
+    try:
+        with open(history_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            locked = set()
+            now = datetime.now()
+            # If array of strings (legacy) or dict {url: timestamp}
+            if isinstance(data, list):
+                return set(data)
+            elif isinstance(data, dict):
+                for url, post_date_str in data.items():
+                    try:
+                        p_date = datetime.fromisoformat(post_date_str)
+                        if now - p_date < timedelta(days=RECYCLE_COOLDOWN_DAYS):
+                            locked.add(url)
+                    except Exception:
+                        locked.add(url)
+                return locked
+    except Exception:
+        return set()
+    return set()
+
+def record_posted_url(url):
+    history_file = Path("post_history.json")
+    data = {}
     if history_file.exists():
         try:
             with open(history_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                raw = json.load(f)
+                if isinstance(raw, dict):
+                    data = raw
+                elif isinstance(raw, list):
+                    for u in raw:
+                        data[u] = (datetime.now() - timedelta(days=5)).isoformat()
         except Exception:
-            return []
-    return []
-
-def record_posted_url(url):
-    history = get_already_posted_urls()
-    if url not in history:
-        history.append(url)
+            pass
+            
+    data[url] = datetime.now().isoformat()
     with open("post_history.json", "w", encoding="utf-8") as f:
-        json.dump(history[-100:], f, indent=2)
+        json.dump(data, f, indent=2)
 
 def extract_target_reels(username):
-    print(f"[*] Extracting media links from @{username} via Playwright...")
+    print(f"[*] Browsing @{username} for top reels via Playwright...")
     from playwright.sync_api import sync_playwright
     links = []
     with sync_playwright() as p:
@@ -161,8 +202,8 @@ def extract_target_reels(username):
 
 def curate_and_publish_reel():
     clean_old_files()
-    posted_urls = get_already_posted_urls()
-    print(f"[*] Total previously posted items in history: {len(posted_urls)}")
+    locked_urls = get_recent_locked_urls()
+    print(f"[*] Total locked reels in 30-day cooldown: {len(locked_urls)}")
     
     target_accounts = list(TARGET_ACCOUNTS)
     random.shuffle(target_accounts)
@@ -170,14 +211,14 @@ def curate_and_publish_reel():
     selected_url = None
     target_user = None
     
-    # Strictly search for fresh reels across accounts
+    # Search for fresh reels or recyclable ones across all niche pages
     for user in target_accounts:
         try:
             links = extract_target_reels(user)
             reel_links = [l for l in links if "/reel/" in l]
             for r in reel_links:
-                # Must be 100% brand new, never posted before
-                if r not in posted_urls:
+                # Must not have been posted in the last 30 days
+                if r not in locked_urls:
                     selected_url = r
                     target_user = user
                     break
@@ -188,9 +229,9 @@ def curate_and_publish_reel():
             continue
             
     if not selected_url:
-        raise Exception("No brand new fresh reel found across all target accounts right now. Skipping to avoid duplicate posting.")
+        raise Exception("All scraped reels are currently within the 30-day cooldown period. Skipping to preserve niche quality.")
 
-    print(f"\n[+] Selected Fresh Reel: {selected_url} from @{target_user}")
+    print(f"\n[+] Selected Reel: {selected_url} from @{target_user}")
     
     Path("temp").mkdir(exist_ok=True)
     raw_video = Path("temp/download_raw.mp4")
@@ -232,7 +273,7 @@ def curate_and_publish_reel():
             
     caption = f"{first_line}\n\nCredit: @{target_user}\nFollow @{IG_USERNAME} for daily marine discoveries.\n\n#oceanlife #marinelife #deepsea #marinebiology #underwater #ocean"
     
-    # 3. Direct Meta Binary Upload (Zero 3rd party hosting)
+    # 3. Direct Meta Binary Upload (100% reliable)
     media_id = upload_and_publish_reel_direct(str(ready_video), caption)
     record_posted_url(selected_url)
     print(f"[Done] Reel publication finished successfully! Live Media ID: {media_id}")
