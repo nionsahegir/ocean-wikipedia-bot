@@ -33,7 +33,6 @@ def upload_and_publish_reel_direct(file_path, caption):
     file_size = os.path.getsize(file_path)
     print(f"[*] Initializing Meta Resumable Upload session (File size: {file_size} bytes)...")
     
-    # Step 1: Initialize Resumable Upload on Meta
     init_url = f"{BASE_URL}/{IG_BUSINESS_ID}/media"
     init_res = requests.post(init_url, data={
         "media_type": "REELS",
@@ -50,8 +49,6 @@ def upload_and_publish_reel_direct(file_path, caption):
     print(f"[+] Resumable Container created: {container_id}")
     print(f"[+] Meta Direct Upload URI: {upload_uri}")
     
-    # Step 2: Upload Video Bytes directly to Meta's rupload servers
-    print("[*] Uploading video binary directly to Meta servers...")
     headers = {
         "Authorization": f"OAuth {PAGE_ACCESS_TOKEN}",
         "offset": "0",
@@ -65,7 +62,6 @@ def upload_and_publish_reel_direct(file_path, caption):
     if up_res.status_code not in [200, 201]:
         raise Exception(f"Meta binary upload failed: {up_res.text}")
         
-    # Step 3: Poll Container Status until FINISHED
     print("[*] Waiting for Meta Instagram to finish processing video...")
     status_url = f"{BASE_URL}/{container_id}?fields=status_code&access_token={PAGE_ACCESS_TOKEN}"
     for _ in range(40):
@@ -78,7 +74,6 @@ def upload_and_publish_reel_direct(file_path, caption):
         elif code == "ERROR":
             raise Exception("Meta video processing failed.")
             
-    # Step 4: Publish Reel Live
     print(f"[*] Publishing Reel live to @{IG_USERNAME}...")
     pub_url = f"{BASE_URL}/{IG_BUSINESS_ID}/media_publish"
     pub_res = requests.post(pub_url, data={
@@ -152,7 +147,7 @@ def extract_target_reels(username):
         )
         page = context.new_page()
         page.goto(f"https://www.instagram.com/{username}/", timeout=60000)
-        time.sleep(6)
+        time.sleep(7)
         
         anchors = page.query_selector_all("a")
         for a in anchors:
@@ -167,6 +162,7 @@ def extract_target_reels(username):
 def curate_and_publish_reel():
     clean_old_files()
     posted_urls = get_already_posted_urls()
+    print(f"[*] Total previously posted items in history: {len(posted_urls)}")
     
     target_accounts = list(TARGET_ACCOUNTS)
     random.shuffle(target_accounts)
@@ -174,11 +170,13 @@ def curate_and_publish_reel():
     selected_url = None
     target_user = None
     
+    # Strictly search for fresh reels across accounts
     for user in target_accounts:
         try:
             links = extract_target_reels(user)
             reel_links = [l for l in links if "/reel/" in l]
             for r in reel_links:
+                # Must be 100% brand new, never posted before
                 if r not in posted_urls:
                     selected_url = r
                     target_user = user
@@ -190,11 +188,9 @@ def curate_and_publish_reel():
             continue
             
     if not selected_url:
-        print("[!] Picking top available reel...")
-        selected_url = links[0] if links else "https://www.instagram.com/oceanstatement/reel/DeWqv0jvnDH/"
-        target_user = "oceanstatement"
+        raise Exception("No brand new fresh reel found across all target accounts right now. Skipping to avoid duplicate posting.")
 
-    print(f"\n[+] Selected Reel: {selected_url} from @{target_user}")
+    print(f"\n[+] Selected Fresh Reel: {selected_url} from @{target_user}")
     
     Path("temp").mkdir(exist_ok=True)
     raw_video = Path("temp/download_raw.mp4")
@@ -236,7 +232,7 @@ def curate_and_publish_reel():
             
     caption = f"{first_line}\n\nCredit: @{target_user}\nFollow @{IG_USERNAME} for daily marine discoveries.\n\n#oceanlife #marinelife #deepsea #marinebiology #underwater #ocean"
     
-    # 3. Direct Meta Binary Upload (Zero third party hosting, 100% reliable)
+    # 3. Direct Meta Binary Upload (Zero 3rd party hosting)
     media_id = upload_and_publish_reel_direct(str(ready_video), caption)
     record_posted_url(selected_url)
     print(f"[Done] Reel publication finished successfully! Live Media ID: {media_id}")
