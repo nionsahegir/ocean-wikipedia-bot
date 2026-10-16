@@ -4,10 +4,13 @@ import time
 import random
 import requests
 
+raw_token = os.getenv("IG_ACCESS_TOKEN", "")
+clean_token = "".join(raw_token.split())
+
 CONFIG = {
-    "instagram_business_id": os.getenv("IG_BUSINESS_ID", "17841449823313081"),
-    "page_access_token": os.getenv("IG_ACCESS_TOKEN", ""),
-    "instagram_username": os.getenv("IG_USERNAME", "oceanwikipedia"),
+    "instagram_business_id": str(os.getenv("IG_BUSINESS_ID", "17841449823313081")).strip(),
+    "page_access_token": clean_token,
+    "instagram_username": str(os.getenv("IG_USERNAME", "oceanwikipedia")).strip(),
     "api_version": "v19.0"
 }
 

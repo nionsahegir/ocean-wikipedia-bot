@@ -6,10 +6,13 @@ import requests
 import subprocess
 from pathlib import Path
 
+raw_token = os.getenv("IG_ACCESS_TOKEN", "")
+clean_token = "".join(raw_token.split())
+
 CONFIG = {
-    "instagram_business_id": os.getenv("IG_BUSINESS_ID", "17841449823313081"),
-    "page_access_token": os.getenv("IG_ACCESS_TOKEN", ""),
-    "instagram_username": os.getenv("IG_USERNAME", "oceanwikipedia"),
+    "instagram_business_id": str(os.getenv("IG_BUSINESS_ID", "17841449823313081")).strip(),
+    "page_access_token": clean_token,
+    "instagram_username": str(os.getenv("IG_USERNAME", "oceanwikipedia")).strip(),
     "api_version": "v19.0"
 }
 
@@ -70,7 +73,7 @@ def upload_and_publish_reel_resumable(video_path, caption):
     Zero third-party file host dependency (no catbox, no tmpfiles).
     """
     ig_id = get_verified_instagram_id()
-    token = CONFIG["page_access_token"]
+    token = "".join(CONFIG["page_access_token"].split())
     file_size = os.path.getsize(video_path)
     
     print(f"[*] Target Instagram Business ID: {ig_id}")
