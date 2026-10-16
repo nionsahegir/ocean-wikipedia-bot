@@ -187,7 +187,6 @@ def load_post_history():
                 if isinstance(data, dict):
                     return data
                 elif isinstance(data, list):
-                    # convert legacy list to dict
                     now = int(time.time())
                     return {url: now for url in data}
         except Exception:
@@ -211,11 +210,6 @@ def load_curated_vault():
     return {}
 
 def select_candidate_reel():
-    """
-    Selects a viral reel rotating across all 8 target accounts:
-    1. Highest priority: A reel that has never been posted.
-    2. Recycle policy: If all reels were posted, pick ones where cooldown >= 25 days.
-    """
     vault = load_curated_vault()
     history = load_post_history()
     current_time = time.time()
@@ -247,14 +241,13 @@ def select_candidate_reel():
                 eligible_recycled.append((r, acc, last_posted))
                 
     if eligible_recycled:
-        # Pick the oldest posted reel for maximum freshness
         eligible_recycled.sort(key=lambda x: x[2])
         chosen = eligible_recycled[0]
         days_ago = (current_time - chosen[2]) / 86400
         print(f"[+] Recycling top viral reel from @{chosen[1]} (posted {days_ago:.1f} days ago): {chosen[0]}")
         return chosen[0], chosen[1]
         
-    # Pass 3: Fallback if cooldown not elapsed yet (pick least recently posted)
+    # Pass 3: Fallback if cooldown not elapsed yet
     fallback_list = []
     for acc in accounts:
         reels = vault.get(acc, [])
@@ -265,7 +258,6 @@ def select_candidate_reel():
         fallback_list.sort(key=lambda x: x[2])
         return fallback_list[0][0], fallback_list[0][1]
 
-    # Hardcoded safety fallback
     return "https://www.instagram.com/oceanstatement/reel/DehyI9yNW4p/", "oceanstatement"
 
 def curate_and_publish_reel():
@@ -274,7 +266,6 @@ def curate_and_publish_reel():
     selected_url, target_user = select_candidate_reel()
     print(f"\n[+] Active Target Reel: {selected_url} (Creator: @{target_user})")
     
-    # 2. Download with yt-dlp & extract original description
     Path("temp").mkdir(exist_ok=True)
     raw_video = Path("temp/download_raw.mp4")
     ready_video = Path("temp/reel_ready.mp4")
@@ -297,17 +288,20 @@ def curate_and_publish_reel():
     dl_cmd = ["yt-dlp", "-f", "mp4/best", "-o", str(raw_video), selected_url]
     subprocess.run(dl_cmd, check=True)
     
-    # 3. Audio Normalization (100% ORIGINAL SOUND ONLY - softened to 0.85 with smooth fade-out)
-    print("[*] Processing video & normalizing authentic original sound...")
+    # 3. Audio & Video Normalization for Meta Graph API compliance:
+    print("[*] Processing video with FFmpeg (+faststart, H.264/AAC, 90s cap)...")
     ff_cmd = [
         "ffmpeg", "-y", "-i", str(raw_video),
-        "-af", "volume=0.85,afade=t=out:st=15:d=2",
-        "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+        "-t", "90",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k",
+        "-af", "volume=0.85",
+        "-movflags", "+faststart",
         str(ready_video)
     ]
     subprocess.run(ff_cmd, check=True)
     
-    # 4. Generate clean, short, natural caption (no weird AI robot voiceover)
+    # 4. Generate clean, short, natural caption
     first_line = "Discovering the mesmerizing depths of our living planet."
     if original_desc:
         lines = [l.strip() for l in original_desc.split("\n") if l.strip() and not l.startswith("#") and not l.lower().startswith("follow") and not l.lower().startswith("credit")]
@@ -316,7 +310,7 @@ def curate_and_publish_reel():
             
     caption = f"{first_line}\n\nCredit: @{target_user}\nFollow @{CONFIG['instagram_username']} for daily ocean wonders.\n\n#oceanlife #marinelife #deepsea #marinebiology #underwater #ocean"
     
-    # 5. Direct Meta Resumable Binary Upload (Zero third party hosts!)
+    # 5. Direct Meta Resumable Binary Upload
     media_id = upload_and_publish_reel_resumable(str(ready_video), caption)
     record_posted_url(selected_url)
     print(f"[Done] Reel publication finished successfully! Live Media ID: {media_id}")
