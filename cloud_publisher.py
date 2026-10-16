@@ -6,10 +6,13 @@ import requests
 import subprocess
 from pathlib import Path
 
+raw_token = os.getenv("IG_ACCESS_TOKEN", "")
+clean_token = "".join(raw_token.split())
+
 CONFIG = {
-    "instagram_business_id": os.getenv("IG_BUSINESS_ID", "17841449823313081"),
-    "page_access_token": os.getenv("IG_ACCESS_TOKEN", ""),
-    "instagram_username": os.getenv("IG_USERNAME", "oceanwikipedia"),
+    "instagram_business_id": str(os.getenv("IG_BUSINESS_ID", "17841449823313081")).strip(),
+    "page_access_token": clean_token,
+    "instagram_username": str(os.getenv("IG_USERNAME", "oceanwikipedia")).strip(),
     "api_version": "v19.0"
 }
 
@@ -41,15 +44,39 @@ def clean_old_files(days=2):
                         except Exception:
                             pass
 
+def get_verified_instagram_id():
+    configured_id = str(CONFIG.get("instagram_business_id", "")).strip()
+    token = CONFIG.get("page_access_token", "").strip()
+    
+    if configured_id == "17841449823313081":
+        return configured_id
+        
+    if configured_id:
+        try:
+            res = requests.get(
+                f"{BASE_URL}/{configured_id}",
+                params={"fields": "instagram_business_account", "access_token": token},
+                timeout=15
+            ).json()
+            if "instagram_business_account" in res and "id" in res["instagram_business_account"]:
+                resolved_id = res["instagram_business_account"]["id"]
+                print(f"[+] Auto-resolved connected Instagram Business Account ID: {resolved_id}")
+                return resolved_id
+        except Exception as e:
+            print(f"[!] Warning resolving IG ID from configured ID: {e}")
+            
+    return "17841449823313081"
+
 def upload_and_publish_reel_resumable(video_path, caption):
     """
     Direct Resumable Binary Upload to Meta's rupload.facebook.com.
     Zero third-party file host dependency (no catbox, no tmpfiles).
     """
-    ig_id = CONFIG["instagram_business_id"]
-    token = CONFIG["page_access_token"]
+    ig_id = get_verified_instagram_id()
+    token = "".join(CONFIG["page_access_token"].split())
     file_size = os.path.getsize(video_path)
     
+    print(f"[*] Target Instagram Business ID: {ig_id}")
     print(f"[*] Step 1: Initializing Resumable Upload session for {file_size} bytes...")
     init_url = f"{BASE_URL}/{ig_id}/media"
     init_res = requests.post(init_url, data={
@@ -109,7 +136,7 @@ def upload_and_publish_reel_resumable(video_path, caption):
     raise Exception(f"Publish failed: {pub_res}")
 
 def publish_story(media_url, is_video=False):
-    ig_id = CONFIG["instagram_business_id"]
+    ig_id = get_verified_instagram_id()
     token = CONFIG["page_access_token"]
     
     print("[*] Creating Story container...")
