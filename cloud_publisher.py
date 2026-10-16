@@ -11,6 +11,7 @@ clean_token = "".join(raw_token.split())
 
 CONFIG = {
     "instagram_business_id": str(os.getenv("IG_BUSINESS_ID", "17841449823313081")).strip(),
+    "facebook_page_id": str(os.getenv("FB_PAGE_ID", "112499011225906")).strip(),
     "page_access_token": clean_token,
     "instagram_username": str(os.getenv("IG_USERNAME", "oceanwikipedia")).strip(),
     "api_version": "v19.0"
@@ -69,7 +70,7 @@ def get_verified_instagram_id():
 
 def upload_and_publish_reel_resumable(video_path, caption):
     """
-    Direct Resumable Binary Upload to Meta's rupload.facebook.com.
+    Direct Resumable Binary Upload to Meta's rupload.facebook.com for Instagram.
     Zero third-party file host dependency (no catbox, no tmpfiles).
     """
     ig_id = get_verified_instagram_id()
@@ -131,9 +132,68 @@ def upload_and_publish_reel_resumable(video_path, caption):
     }).json()
     
     if "id" in pub_res:
-        print(f"[🎉 SUCCESS] Reel published live! Media ID: {pub_res['id']}")
+        print(f"[🎉 SUCCESS] Reel published live on Instagram! Media ID: {pub_res['id']}")
         return pub_res["id"]
     raise Exception(f"Publish failed: {pub_res}")
+
+def publish_facebook_reel(video_path, caption):
+    """
+    Direct Facebook Page Reels Upload via Meta video_reels API.
+    Zero third-party hosts.
+    """
+    page_id = CONFIG.get("facebook_page_id", "112499011225906")
+    token = "".join(CONFIG["page_access_token"].split())
+    file_size = os.path.getsize(video_path)
+    
+    print(f"\n[*] --- Publishing Reel to Facebook Page ({page_id}) ---")
+    print(f"[*] Step 1: Initializing Facebook Reel session...")
+    init_res = requests.post(
+        f"{BASE_URL}/{page_id}/video_reels",
+        data={
+            "upload_phase": "start",
+            "access_token": token
+        }
+    ).json()
+    
+    if "video_id" not in init_res or "upload_url" not in init_res:
+        print(f"[!] Facebook Reel init failed: {init_res}")
+        if "pages_manage_posts" in str(init_res):
+            print("[!] Note: Your Access Token needs 'pages_manage_posts' permission to publish on Facebook Page.")
+        return None
+        
+    video_id = init_res["video_id"]
+    upload_url = init_res["upload_url"]
+    print(f"[+] Facebook Video ID: {video_id}")
+    print(f"[+] Upload URL: {upload_url[:50]}...")
+    
+    print(f"[*] Step 2: Uploading video binary ({file_size} bytes) to Facebook...")
+    headers = {
+        "Authorization": f"OAuth {token}",
+        "file_offset": "0"
+    }
+    with open(video_path, "rb") as f:
+        upload_res = requests.post(upload_url, headers=headers, data=f, timeout=300)
+        
+    print(f"    Upload response: HTTP {upload_res.status_code}")
+    
+    print(f"[*] Step 3: Publishing Facebook Reel live...")
+    finish_res = requests.post(
+        f"{BASE_URL}/{page_id}/video_reels",
+        data={
+            "upload_phase": "finish",
+            "access_token": token,
+            "video_id": video_id,
+            "video_state": "PUBLISHED",
+            "description": caption
+        }
+    ).json()
+    
+    if finish_res.get("success"):
+        print(f"[🎉 SUCCESS] Facebook Reel published live! Video ID: {video_id}")
+        return video_id
+    else:
+        print(f"[!] Facebook finish returned: {finish_res}")
+        return None
 
 def publish_story(media_url, is_video=False):
     ig_id = get_verified_instagram_id()
@@ -310,11 +370,18 @@ def curate_and_publish_reel():
             
     caption = f"{first_line}\n\nCredit: @{target_user}\nFollow @{CONFIG['instagram_username']} for daily ocean wonders.\n\n#oceanlife #marinelife #deepsea #marinebiology #underwater #ocean"
     
-    # 5. Direct Meta Resumable Binary Upload
-    media_id = upload_and_publish_reel_resumable(str(ready_video), caption)
+    # 5. Direct Meta Resumable Binary Upload for Instagram (Zero third party hosts!)
+    ig_media_id = upload_and_publish_reel_resumable(str(ready_video), caption)
+    
+    # 6. Direct Meta Facebook Page Reels Upload
+    try:
+        fb_media_id = publish_facebook_reel(str(ready_video), caption)
+    except Exception as fb_err:
+        print(f"[!] Facebook Page Reel notice: {fb_err}")
+        
     record_posted_url(selected_url)
-    print(f"[Done] Reel publication finished successfully! Live Media ID: {media_id}")
-    return media_id
+    print(f"[Done] Multi-platform publication finished! IG ID: {ig_media_id}")
+    return ig_media_id
 
 def curate_and_publish_story():
     clean_old_files()
