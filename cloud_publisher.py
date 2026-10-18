@@ -96,15 +96,18 @@ def upload_and_publish_reel_resumable(video_path, caption):
     print(f"[+] Direct Meta Upload URI: {upload_uri}")
     
     print(f"[*] Step 2: Streaming video binary directly to Meta servers (rupload.facebook.com)...")
+    
+    # Read binary bytes into memory so requests sends full Content-Length instead of chunked encoding
+    with open(video_path, "rb") as f:
+        video_bytes = f.read()
+
     headers = {
         "Authorization": f"OAuth {token}",
         "offset": "0",
-        "file_size": str(file_size),
-        "Content-Type": "application/octet-stream"
+        "file_size": str(len(video_bytes))
     }
     
-    with open(video_path, "rb") as f:
-        upload_res = requests.post(upload_uri, headers=headers, data=f, timeout=300)
+    upload_res = requests.post(upload_uri, headers=headers, data=video_bytes, timeout=300)
         
     if upload_res.status_code not in [200, 201]:
         raise Exception(f"Meta binary upload failed (HTTP {upload_res.status_code}): {upload_res.text}")
@@ -172,7 +175,7 @@ def publish_facebook_reel(video_path, caption):
         "file_offset": "0"
     }
     with open(video_path, "rb") as f:
-        upload_res = requests.post(upload_url, headers=headers, data=f, timeout=300)
+        upload_res = requests.post(upload_url, headers=headers, data=f.read(), timeout=300)
         
     print(f"    Upload response: HTTP {upload_res.status_code}")
     
@@ -345,20 +348,44 @@ def curate_and_publish_reel():
             pass
 
     print("[*] Downloading video with yt-dlp...")
-    dl_cmd = ["yt-dlp", "-f", "mp4/best", "-o", str(raw_video), selected_url]
+    # Ensure both video and audio streams are fetched and merged
+    dl_cmd = ["yt-dlp", "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best", "--merge-output-format", "mp4", "-o", str(raw_video), selected_url]
     subprocess.run(dl_cmd, check=True)
     
+    # Check if audio stream exists in raw video
+    has_audio = False
+    try:
+        probe_cmd = ["ffprobe", "-i", str(raw_video), "-show_streams", "-select_streams", "a", "-loglevel", "error"]
+        p_res = subprocess.run(probe_cmd, capture_output=True, text=True)
+        if "codec_type=audio" in p_res.stdout or len(p_res.stdout.strip()) > 0:
+            has_audio = True
+    except Exception:
+        has_audio = True
+    
     # 3. Audio & Video Normalization for Meta Graph API compliance:
-    print("[*] Processing video with FFmpeg (+faststart, H.264/AAC, 90s cap)...")
-    ff_cmd = [
-        "ffmpeg", "-y", "-i", str(raw_video),
-        "-t", "90",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "128k",
-        "-af", "volume=0.85",
-        "-movflags", "+faststart",
-        str(ready_video)
-    ]
+    print(f"[*] Processing video with FFmpeg (+faststart, H.264/AAC, audio_present={has_audio}, 90s cap)...")
+    if has_audio:
+        ff_cmd = [
+            "ffmpeg", "-y", "-i", str(raw_video),
+            "-t", "90",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k",
+            "-af", "volume=0.85",
+            "-movflags", "+faststart",
+            str(ready_video)
+        ]
+    else:
+        # Fallback: add a silent audio track if original video was completely muted (Meta requires audio for Reels)
+        ff_cmd = [
+            "ffmpeg", "-y", "-i", str(raw_video),
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-t", "90",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k",
+            "-shortest",
+            "-movflags", "+faststart",
+            str(ready_video)
+        ]
     subprocess.run(ff_cmd, check=True)
     
     # 4. Generate clean, short, natural caption
