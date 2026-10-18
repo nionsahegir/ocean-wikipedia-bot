@@ -68,16 +68,99 @@ def get_verified_instagram_id():
             
     return "17841449823313081"
 
-def upload_and_publish_reel_resumable(video_path, caption):
+def upload_to_temporary_host(video_path):
     """
-    Direct Resumable Binary Upload to Meta's rupload.facebook.com for Instagram.
-    Zero third-party file host dependency (no catbox, no tmpfiles).
+    Uploads video to a fast temporary public host so Meta Graph API can fetch via video_url.
+    Files are automatically deleted after 1 hour.
     """
+    # Option 1: Litterbox (catbox) - 1 hour retention
+    try:
+        print("[*] Uploading video to temporary host (Litterbox)...")
+        with open(video_path, "rb") as f:
+            res = requests.post(
+                "https://litterbox.catbox.moe/resources/internals/api.php",
+                data={"reqtype": "fileupload", "time": "1h"},
+                files={"fileToUpload": f},
+                timeout=90
+            )
+        if res.status_code == 200 and res.text.strip().startswith("http"):
+            url = res.text.strip()
+            print(f"[+] Temporary public video URL: {url}")
+            return url
+    except Exception as e:
+        print(f"[!] Litterbox notice: {e}")
+
+    # Option 2: tmpfiles.org
+    try:
+        print("[*] Uploading video to temporary host (tmpfiles.org)...")
+        with open(video_path, "rb") as f:
+            res = requests.post(
+                "https://tmpfiles.org/api/v1/upload",
+                files={"file": f},
+                timeout=90
+            ).json()
+        if res.get("status") == "success":
+            raw_url = res["data"]["url"]
+            url = raw_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+            print(f"[+] Temporary public video URL: {url}")
+            return url
+    except Exception as e:
+        print(f"[!] tmpfiles notice: {e}")
+
+    return None
+
+def publish_reel_via_url(video_url, caption):
+    """Publish Instagram Reel using Meta's standard video_url container method."""
     ig_id = get_verified_instagram_id()
-    token = "".join(CONFIG["page_access_token"].split())
+    token = CONFIG["page_access_token"]
+    
+    print("[*] Initializing Reel container with video_url...")
+    init_url = f"{BASE_URL}/{ig_id}/media"
+    init_res = requests.post(init_url, data={
+        "media_type": "REELS",
+        "video_url": video_url,
+        "caption": caption,
+        "access_token": token
+    }).json()
+    
+    if "id" not in init_res:
+        raise Exception(f"Failed to create Reel container: {init_res}")
+        
+    container_id = init_res["id"]
+    print(f"[+] Container ID created: {container_id}")
+    
+    print("[*] Waiting for Meta server processing...")
+    status_url = f"{BASE_URL}/{container_id}?fields=status_code,status&access_token={token}"
+    for i in range(45):
+        time.sleep(5)
+        st = requests.get(status_url).json()
+        code = st.get("status_code")
+        print(f"    Status Check {i+1}: {code}")
+        if code == "FINISHED":
+            break
+        elif code == "ERROR":
+            raise Exception(f"Instagram media processing error: {st}")
+    else:
+        print("[!] Container status check timed out, attempting to publish...")
+
+    print("[*] Publishing Reel live to Instagram...")
+    pub_url = f"{BASE_URL}/{ig_id}/media_publish"
+    pub_res = requests.post(pub_url, data={
+        "creation_id": container_id,
+        "access_token": token
+    }).json()
+    
+    if "id" in pub_res:
+        print(f"[🎉 SUCCESS] Reel published live on Instagram! Media ID: {pub_res['id']}")
+        return pub_res["id"]
+    raise Exception(f"Publish failed: {pub_res}")
+
+def upload_and_publish_reel_resumable(video_path, caption):
+    """Direct Resumable Upload via curl binary streaming."""
+    ig_id = get_verified_instagram_id()
+    token = CONFIG["page_access_token"]
     file_size = os.path.getsize(video_path)
     
-    print(f"[*] Target Instagram Business ID: {ig_id}")
     print(f"[*] Step 1: Initializing Resumable Upload session for {file_size} bytes...")
     init_url = f"{BASE_URL}/{ig_id}/media"
     init_res = requests.post(init_url, data={
@@ -96,21 +179,18 @@ def upload_and_publish_reel_resumable(video_path, caption):
     print(f"[+] Direct Meta Upload URI: {upload_uri}")
     
     print(f"[*] Step 2: Streaming video binary directly to Meta servers (rupload.facebook.com)...")
-    
-    # Read binary bytes into memory so requests sends full Content-Length instead of chunked encoding
-    with open(video_path, "rb") as f:
-        video_bytes = f.read()
+    curl_cmd = [
+        "curl", "-s", "-S", "-X", "POST", upload_uri,
+        "-H", f"Authorization: OAuth {token}",
+        "-H", "offset: 0",
+        "-H", f"file_size: {file_size}",
+        "-H", "Content-Type: video/mp4",
+        "--data-binary", f"@{video_path}"
+    ]
+    curl_res = subprocess.run(curl_cmd, capture_output=True, text=True)
+    if curl_res.returncode != 0 or "ProcessingFailedError" in curl_res.stdout or "error" in curl_res.stdout.lower():
+        raise Exception(f"Meta binary upload failed: {curl_res.stdout} {curl_res.stderr}")
 
-    headers = {
-        "Authorization": f"OAuth {token}",
-        "offset": "0",
-        "file_size": str(len(video_bytes))
-    }
-    
-    upload_res = requests.post(upload_uri, headers=headers, data=video_bytes, timeout=300)
-        
-    if upload_res.status_code not in [200, 201]:
-        raise Exception(f"Meta binary upload failed (HTTP {upload_res.status_code}): {upload_res.text}")
     print("[+] Video bytes successfully accepted by Meta servers!")
     
     print("[*] Step 3: Waiting for Meta container processing...")
@@ -124,9 +204,7 @@ def upload_and_publish_reel_resumable(video_path, caption):
             break
         elif code == "ERROR":
             raise Exception(f"Instagram media processing error: {st}")
-    else:
-        print("[!] Warning: Container timed out waiting for FINISHED, attempting publish anyway...")
-        
+            
     print("[*] Step 4: Publishing Reel live to Instagram...")
     pub_url = f"{BASE_URL}/{ig_id}/media_publish"
     pub_res = requests.post(pub_url, data={
@@ -139,13 +217,23 @@ def upload_and_publish_reel_resumable(video_path, caption):
         return pub_res["id"]
     raise Exception(f"Publish failed: {pub_res}")
 
+def upload_and_publish_reel(video_path, caption):
+    """Robust Dual-Engine Publisher: Resumable with automatic video_url fallback."""
+    try:
+        print("[*] Method A: Attempting Direct Meta Resumable Upload...")
+        return upload_and_publish_reel_resumable(video_path, caption)
+    except Exception as e:
+        print(f"[!] Direct resumable upload failed: {e}")
+        print("[*] Method B: Switching to bulletproof video_url fallback...")
+        temp_url = upload_to_temporary_host(video_path)
+        if not temp_url:
+            raise Exception("Both resumable upload and temporary hosting fallback failed.")
+        return publish_reel_via_url(temp_url, caption)
+
 def publish_facebook_reel(video_path, caption):
-    """
-    Direct Facebook Page Reels Upload via Meta video_reels API.
-    Zero third-party hosts.
-    """
+    """Direct Facebook Page Reels Upload via Meta video_reels API."""
     page_id = CONFIG.get("facebook_page_id", "112499011225906")
-    token = "".join(CONFIG["page_access_token"].split())
+    token = CONFIG["page_access_token"]
     file_size = os.path.getsize(video_path)
     
     print(f"\n[*] --- Publishing Reel to Facebook Page ({page_id}) ---")
@@ -159,15 +247,11 @@ def publish_facebook_reel(video_path, caption):
     ).json()
     
     if "video_id" not in init_res or "upload_url" not in init_res:
-        print(f"[!] Facebook Reel init failed: {init_res}")
-        if "pages_manage_posts" in str(init_res):
-            print("[!] Note: Your Access Token needs 'pages_manage_posts' permission to publish on Facebook Page.")
+        print(f"[!] Facebook Reel init notice: {init_res}")
         return None
         
     video_id = init_res["video_id"]
     upload_url = init_res["upload_url"]
-    print(f"[+] Facebook Video ID: {video_id}")
-    print(f"[+] Upload URL: {upload_url[:50]}...")
     
     print(f"[*] Step 2: Uploading video binary ({file_size} bytes) to Facebook...")
     headers = {
@@ -348,11 +432,10 @@ def curate_and_publish_reel():
             pass
 
     print("[*] Downloading video with yt-dlp...")
-    # Ensure both video and audio streams are fetched and merged
     dl_cmd = ["yt-dlp", "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best", "--merge-output-format", "mp4", "-o", str(raw_video), selected_url]
     subprocess.run(dl_cmd, check=True)
     
-    # Check if audio stream exists in raw video
+    # Check if audio stream exists
     has_audio = False
     try:
         probe_cmd = ["ffprobe", "-i", str(raw_video), "-show_streams", "-select_streams", "a", "-loglevel", "error"]
@@ -362,12 +445,15 @@ def curate_and_publish_reel():
     except Exception:
         has_audio = True
     
-    # 3. Audio & Video Normalization for Meta Graph API compliance:
-    print(f"[*] Processing video with FFmpeg (+faststart, H.264/AAC, audio_present={has_audio}, 90s cap)...")
+    # 3. Audio & Video Normalization for Meta Graph API compliance (9:16 padded + AAC audio):
+    print(f"[*] Processing video with FFmpeg (9:16 padded, H.264/AAC, audio_present={has_audio})...")
+    vf_filter = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1"
+    
     if has_audio:
         ff_cmd = [
             "ffmpeg", "-y", "-i", str(raw_video),
             "-t", "90",
+            "-vf", vf_filter,
             "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "128k",
             "-af", "volume=0.85",
@@ -375,11 +461,11 @@ def curate_and_publish_reel():
             str(ready_video)
         ]
     else:
-        # Fallback: add a silent audio track if original video was completely muted (Meta requires audio for Reels)
         ff_cmd = [
             "ffmpeg", "-y", "-i", str(raw_video),
             "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
             "-t", "90",
+            "-vf", vf_filter,
             "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "128k",
             "-shortest",
@@ -397,10 +483,10 @@ def curate_and_publish_reel():
             
     caption = f"{first_line}\n\nCredit: @{target_user}\nFollow @{CONFIG['instagram_username']} for daily ocean wonders.\n\n#oceanlife #marinelife #deepsea #marinebiology #underwater #ocean"
     
-    # 5. Direct Meta Resumable Binary Upload for Instagram (Zero third party hosts!)
-    ig_media_id = upload_and_publish_reel_resumable(str(ready_video), caption)
+    # 5. Dual-Engine Publication for Instagram
+    ig_media_id = upload_and_publish_reel(str(ready_video), caption)
     
-    # 6. Direct Meta Facebook Page Reels Upload
+    # 6. Direct Facebook Page Reels Upload
     try:
         fb_media_id = publish_facebook_reel(str(ready_video), caption)
     except Exception as fb_err:
