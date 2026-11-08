@@ -32,6 +32,24 @@ TARGET_ACCOUNTS = [
 BASE_URL = f"https://graph.facebook.com/{CONFIG['api_version']}"
 RECYCLE_COOLDOWN_DAYS = 25  # Re-post eligible after 25 days cooldown
 
+
+def send_telegram_alert(message):
+    tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if not tg_token or not tg_chat_id:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+        requests.post(url, data={
+            "chat_id": tg_chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": "false"
+        }, timeout=10)
+        print("[+] Telegram alert notification delivered!")
+    except Exception as e:
+        print(f"[!] Warning sending Telegram alert: {e}")
+
 def clean_old_files(days=2):
     cutoff = time.time() - (days * 86400)
     for folder in ["temp", "content"]:
@@ -429,6 +447,16 @@ def curate_and_publish_reel():
                 
             record_posted_url(selected_url)
             print(f"[Done] Multi-platform publication finished! IG ID: {ig_media_id}")
+            fb_status = f"Published (ID: {fb_media_id})" if 'fb_media_id' in locals() and fb_media_id else "Logged"
+            alert_text = (
+                "🎉 <b>New Ocean Wikipedia Reel Published!</b>\n\n"
+                f"👤 <b>Creator Credit:</b> @{target_user}\n"
+                f"📱 <b>Instagram Media ID:</b> <code>{ig_media_id}</code>\n"
+                f"📘 <b>Facebook Page:</b> {fb_status}\n"
+                f"🔗 <b>Source Reel:</b> {selected_url}\n\n"
+                "🌊 <i>Live on Instagram & Facebook!</i>"
+            )
+            send_telegram_alert(alert_text)
             return ig_media_id
             
         except Exception as err:
@@ -447,7 +475,15 @@ def curate_and_publish_story():
     ]
     img = random.choice(ocean_story_images)
     print(f"[*] Publishing ocean daily story...")
-    return publish_story(img, is_video=False)
+    story_id = publish_story(img, is_video=False)
+    alert_text = (
+        "🌊 <b>New Ocean Wikipedia Story Published!</b>\n\n"
+        f"📱 <b>Instagram Media ID:</b> <code>{story_id}</code>\n"
+        "🕒 <b>Type:</b> 24h Daily Ocean Story\n"
+        "✨ <i>Live on Instagram!</i>"
+    )
+    send_telegram_alert(alert_text)
+    return story_id
 
 if __name__ == "__main__":
     import sys
