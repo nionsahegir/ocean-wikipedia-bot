@@ -33,16 +33,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install FFmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Install Dependencies Directly
+      - name: Install Dependencies
         run: |
-          pip install requests yt-dlp playwright
-          playwright install --with-deps chromium
+          pip install -r requirements.txt
 
       - name: Determine Action
         id: action_step
@@ -63,13 +63,17 @@ jobs:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_BUSINESS_ID: ${{ secrets.IG_BUSINESS_ID }}
           IG_USERNAME: ${{ secrets.IG_USERNAME }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python cloud_publisher.py ${{ steps.action_step.outputs.action }}
 
       - name: Commit & Push Updated History
+        if: always()
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add post_history.json || true
+          git pull origin main --rebase || true
+          git add post_history.json
           git commit -m "chore: update post history [skip ci]" || echo "No changes to commit"
-          git push || true
+          git push origin main || echo "Git push notice: Please ensure Read & Write permissions are enabled in repo Settings -> Actions -> General"
