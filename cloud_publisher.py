@@ -325,7 +325,8 @@ def select_candidate_reel(exclude_urls=None):
     print(f"[*] Post history count: {len(history)} entries")
     
     # Alternate cleanly between oceanstatement and oceanwikipedia, strictly oldest-first
-    accounts = ["oceanstatement", "oceanwikipedia"] if (len(history) % 2 == 0) else ["oceanwikipedia", "oceanstatement"]
+    unique_sc_count = len({extract_shortcode(k) for k in history})
+    accounts = ["oceanstatement", "oceanwikipedia"] if (unique_sc_count % 2 == 0) else ["oceanwikipedia", "oceanstatement"]
     
     # Pass 1: Fresh, unposted reels (strictly oldest-to-newest)
     for acc in accounts:
