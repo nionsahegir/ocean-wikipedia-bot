@@ -20,13 +20,7 @@ CONFIG = {
 
 TARGET_ACCOUNTS = [
     "oceanstatement",
-    "ocean.autograph",
-    "ocean_content",
-    "oceana",
-    "paulnicklen",
-    "nautiluslive",
-    "mission_blue",
-    "scubadivingmag"
+    "oceanwikipedia"
 ]
 
 BASE_URL = f"https://graph.facebook.com/{CONFIG['api_version']}"
@@ -330,17 +324,15 @@ def select_candidate_reel(exclude_urls=None):
     
     print(f"[*] Post history count: {len(history)} entries")
     
-    accounts = list(TARGET_ACCOUNTS)
-    random.shuffle(accounts)
+    # Alternate cleanly between oceanstatement and oceanwikipedia, strictly oldest-first
+    accounts = ["oceanstatement", "oceanwikipedia"] if (len(history) % 2 == 0) else ["oceanwikipedia", "oceanstatement"]
     
-    # Pass 1: Fresh, unposted reels
+    # Pass 1: Fresh, unposted reels (strictly oldest-to-newest)
     for acc in accounts:
         reels = vault.get(acc, [])
-        shuffled = list(reels)
-        random.shuffle(shuffled)
-        for r in shuffled:
+        for r in reels:
             if r not in exclude_urls and not is_already_posted(r, history):
-                print(f"[+] Selected fresh reel from @{acc}: {r}")
+                print(f"[+] Selected oldest unposted reel from @{acc}: {r}")
                 return r, acc
                 
     # Pass 2: Cooldown recycling (>= 25 days)
@@ -383,7 +375,7 @@ def select_candidate_reel(exclude_urls=None):
 def curate_and_publish_reel():
     clean_old_files()
     tried_urls = set()
-    max_attempts = 3
+    max_attempts = 5
     
     for attempt in range(1, max_attempts + 1):
         selected_url, target_user = select_candidate_reel(exclude_urls=tried_urls)
@@ -434,7 +426,10 @@ def curate_and_publish_reel():
                 if lines:
                     first_line = lines[0]
                     
-            caption = f"{first_line}\n\nCredit: @{target_user}\nFollow @{CONFIG['instagram_username']} for daily ocean wonders.\n\n#oceanlife #marinelife #deepsea #marinebiology #underwater #ocean"
+            if target_user == CONFIG["instagram_username"]:
+                caption = f"{first_line}\n\nFollow @{CONFIG['instagram_username']} for daily ocean wonders.\n\n#oceanlife #marinelife #deepsea #marinebiology #underwater #ocean"
+            else:
+                caption = f"{first_line}\n\nCredit: @{target_user}\nFollow @{CONFIG['instagram_username']} for daily ocean wonders.\n\n#oceanlife #marinelife #deepsea #marinebiology #underwater #ocean"
             
             # Direct Meta Resumable Binary Upload for Instagram
             ig_media_id = upload_and_publish_reel_resumable(str(ready_video), caption)
